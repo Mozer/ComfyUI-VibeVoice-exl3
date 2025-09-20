@@ -1,0 +1,728 @@
+{
+  "id": "c6ef8963-032c-45f6-954f-b5f6b354343b",
+  "revision": 0,
+  "last_node_id": 67,
+  "last_link_id": 100,
+  "nodes": [
+    {
+      "id": 61,
+      "type": "Note",
+      "pos": [
+        832.5051879882812,
+        376.4481201171875
+      ],
+      "size": [
+        210,
+        184.3014373779297
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "for speed",
+      "properties": {},
+      "widgets_values": [
+        "7b-no-llm-bf16\nbf16\n7b-exl3-4bit\nsage\nFree_mem: false\n6 steps\ncfg 1.40\nsampling: false\nsteps_to_cache: 2\nstreaming: True\nstreaming_buffer: 1\nincrease_cfg: true\nsplit: True"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 56,
+      "type": "SaveAudioMP3",
+      "pos": [
+        818.1717529296875,
+        849.2903442382812
+      ],
+      "size": [
+        264.29296875,
+        142.3744354248047
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 97
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveAudioMP3"
+      },
+      "widgets_values": [
+        "audio/ComfyUI",
+        "V0"
+      ]
+    },
+    {
+      "id": 66,
+      "type": "SaveAudioMP3",
+      "pos": [
+        812.5835571289062,
+        200.4615020751953
+      ],
+      "size": [
+        288.7283020019531,
+        136
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 98
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveAudioMP3"
+      },
+      "widgets_values": [
+        "audio/ComfyUI",
+        "V0"
+      ]
+    },
+    {
+      "id": 67,
+      "type": "Note",
+      "pos": [
+        832.664794921875,
+        597.1406860351562
+      ],
+      "size": [
+        210,
+        197.05030822753906
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "for quality",
+      "properties": {},
+      "widgets_values": [
+        "7b-no-llm-bf16\nbf16\n7b-exl3-8bit\nsage\nFree_mem: false\n16 steps\ncfg 1.30\nsampling: false\nsteps_to_cache: 0\nstreaming: True\nstreaming_buffer: 10\nincrease_cfg: false\nsplit: false"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 63,
+      "type": "VibeVoiceSingleSpeakerNodeExl3",
+      "pos": [
+        463.85003662109375,
+        169.1021270751953
+      ],
+      "size": [
+        324.5692138671875,
+        539.9939575195312
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "voice_to_clone",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 91
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            98
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VibeVoiceSingleSpeakerNodeExl3"
+      },
+      "widgets_values": [
+        "Приветик всем котяткам в этом чатике!",
+        "VibeVoice-7B-no-llm-bf16",
+        "bf16",
+        "vibevoice-7b-exl3-4bit",
+        "sage",
+        false,
+        5,
+        64,
+        "fixed",
+        1.4,
+        false,
+        0.95,
+        0.95,
+        true,
+        1,
+        2,
+        true,
+        true
+      ]
+    },
+    {
+      "id": 45,
+      "type": "VHS_VideoCombine",
+      "pos": [
+        1320.030517578125,
+        804.3662109375
+      ],
+      "size": [
+        214.7587890625,
+        542.7587890625
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 59
+        },
+        {
+          "name": "audio",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 77
+        },
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "frame_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "frame_rate"
+          },
+          "link": 63
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Filenames",
+          "type": "VHS_FILENAMES",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_VideoCombine"
+      },
+      "widgets_values": {
+        "frame_rate": 25,
+        "loop_count": 0,
+        "filename_prefix": "AnimateDiff",
+        "format": "video/h264-mp4",
+        "pix_fmt": "yuv420p",
+        "crf": 19,
+        "save_metadata": true,
+        "trim_to_audio": false,
+        "pingpong": false,
+        "save_output": true,
+        "videopreview": {
+          "hidden": false,
+          "paused": true,
+          "params": {
+            "filename": "AnimateDiff_00360-audio.mp4",
+            "subfolder": "",
+            "type": "output",
+            "format": "video/h264-mp4",
+            "frame_rate": 25,
+            "workflow": "AnimateDiff_00360.png",
+            "fullpath": "C:\\DATA\\SD\\ComfyUI_windows_portable_nvidia\\ComfyUI_windows_portable\\ComfyUI\\output\\AnimateDiff_00360-audio.mp4"
+          },
+          "muted": false
+        }
+      }
+    },
+    {
+      "id": 43,
+      "type": "Wav2Lip",
+      "pos": [
+        1323.0491943359375,
+        579.2385864257812
+      ],
+      "size": [
+        234,
+        175
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 58
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 100
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "widget": {
+            "name": "fps"
+          },
+          "link": 62
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            59
+          ]
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            77
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Wav2Lip"
+      },
+      "widgets_values": [
+        "repetitive",
+        4,
+        "wav2lip_gan.pth",
+        10,
+        25
+      ]
+    },
+    {
+      "id": 47,
+      "type": "PrimitiveFloat",
+      "pos": [
+        -379.71649169921875,
+        235.53155517578125
+      ],
+      "size": [
+        210,
+        58
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            61,
+            62,
+            63
+          ]
+        }
+      ],
+      "title": "FPS",
+      "properties": {
+        "Node name for S&R": "PrimitiveFloat"
+      },
+      "widgets_values": [
+        25
+      ]
+    },
+    {
+      "id": 44,
+      "type": "VHS_LoadVideo",
+      "pos": [
+        -132.72845458984375,
+        148.63597106933594
+      ],
+      "size": [
+        247.455078125,
+        551.455078125
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "meta_batch",
+          "shape": 7,
+          "type": "VHS_BatchManager",
+          "link": null
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": null
+        },
+        {
+          "name": "force_rate",
+          "type": "FLOAT",
+          "widget": {
+            "name": "force_rate"
+          },
+          "link": 61
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            58
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null
+        },
+        {
+          "name": "video_info",
+          "type": "VHS_VIDEOINFO",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VHS_LoadVideo"
+      },
+      "widgets_values": {
+        "video": "emma_wm_300.mp4",
+        "force_rate": 25,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "format": "AnimateDiff",
+        "choose video to upload": "image",
+        "videopreview": {
+          "hidden": false,
+          "paused": true,
+          "params": {
+            "filename": "emma_wm_300.mp4",
+            "type": "input",
+            "format": "video/mp4",
+            "force_rate": 25,
+            "custom_width": 0,
+            "custom_height": 0,
+            "frame_load_cap": 0,
+            "skip_first_frames": 0,
+            "select_every_nth": 1
+          },
+          "muted": false
+        }
+      }
+    },
+    {
+      "id": 39,
+      "type": "LoadAudio",
+      "pos": [
+        137.25125122070312,
+        647.388427734375
+      ],
+      "size": [
+        214.080078125,
+        136
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            91,
+            93
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.49"
+      },
+      "widgets_values": [
+        "reflex_6s.wav",
+        null,
+        null
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 65,
+      "type": "LoadAudio",
+      "pos": [
+        144.0659637451172,
+        837.7090454101562
+      ],
+      "size": [
+        214.080078125,
+        136
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            94
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.49"
+      },
+      "widgets_values": [
+        "zhirik.wav",
+        null,
+        null
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 22,
+      "type": "Note",
+      "pos": [
+        120.54878997802734,
+        1036.0384521484375
+      ],
+      "size": [
+        293.8641052246094,
+        96.81277465820312
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "models are auto-downloaded to /models/vibevoice/\n\nmodels collection:\nhttps://huggingface.co/collections/tensorbanana/vibevoice-68cd1bac5766dc65e90380c1"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 64,
+      "type": "VibeVoiceMultipleSpeakersNodeExl3",
+      "pos": [
+        465.9748229980469,
+        764.9351196289062
+      ],
+      "size": [
+        324.5692443847656,
+        636.11572265625
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "speaker1_voice",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 93
+        },
+        {
+          "name": "speaker2_voice",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 94
+        },
+        {
+          "name": "speaker3_voice",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "speaker4_voice",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            97,
+            100
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VibeVoiceMultipleSpeakersNodeExl3"
+      },
+      "widgets_values": [
+        "[1]: Приветик всем котяткам в этом чатике! \n[2]: Ты кого, это котяткой назвала? Совсем что ли с дуба рухнула?\n[1]: Просите, Владимир Вольфович, я вас сразу так и не узнала...",
+        "VibeVoice-7B-no-llm-bf16",
+        "bf16",
+        "vibevoice-7b-exl3-4bit",
+        "sage",
+        false,
+        5,
+        49,
+        "fixed",
+        1.4,
+        false,
+        0.95,
+        0.95,
+        true,
+        1,
+        2,
+        true,
+        true
+      ]
+    }
+  ],
+  "links": [
+    [
+      58,
+      44,
+      0,
+      43,
+      0,
+      "IMAGE"
+    ],
+    [
+      59,
+      43,
+      0,
+      45,
+      0,
+      "IMAGE"
+    ],
+    [
+      61,
+      47,
+      0,
+      44,
+      2,
+      "FLOAT"
+    ],
+    [
+      62,
+      47,
+      0,
+      43,
+      2,
+      "FLOAT"
+    ],
+    [
+      63,
+      47,
+      0,
+      45,
+      4,
+      "FLOAT"
+    ],
+    [
+      77,
+      43,
+      1,
+      45,
+      1,
+      "AUDIO"
+    ],
+    [
+      91,
+      39,
+      0,
+      63,
+      0,
+      "AUDIO"
+    ],
+    [
+      93,
+      39,
+      0,
+      64,
+      0,
+      "AUDIO"
+    ],
+    [
+      94,
+      65,
+      0,
+      64,
+      1,
+      "AUDIO"
+    ],
+    [
+      97,
+      64,
+      0,
+      56,
+      0,
+      "AUDIO"
+    ],
+    [
+      98,
+      63,
+      0,
+      66,
+      0,
+      "AUDIO"
+    ],
+    [
+      100,
+      64,
+      0,
+      43,
+      1,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9412602783646734,
+      "offset": [
+        382.8135839027475,
+        -16.76898580920553
+      ]
+    },
+    "frontendVersion": "1.25.9",
+    "VHS_latentpreview": true,
+    "VHS_latentpreviewrate": 3,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}
