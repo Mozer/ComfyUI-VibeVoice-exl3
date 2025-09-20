@@ -61,7 +61,7 @@ https://github.com/mozer/comfyUI-vibevoice-exl3
 Or via: `cd ComfyUI/custom_nodes && git clone https://github.com/mozer/comfyUI-vibevoice-exl3`
 Restart comfyui.
 
-Workflow with wav2lip (wav2lip is optional): LINK
+Workflow with wav2lip (wav2lip is optional): https://github.com/Mozer/ComfyUI-VibeVoice-exl3/blob/main/examples/vibevoice_exl3_with_wav2lip.json
 You don't need to download the models manually. They are dowloaded automatically. But if you really want to, they're available here: https://huggingface.co/collections/tensorbanana/vibevoice-68cd1bac5766dc65e90380c1
  If you're going to upload them manually, make sure to study the folder structure first (HF-downloader uses this method). example: /models/vibevoice/models--tensorbanana--vibevoice-1.5b-exl3-8bit/snapshots/badfbb16dd63a1a8e633ba6eb138a21303ed1325/model.safetensors
 
