@@ -5,10 +5,11 @@ import os
 import re
 import tempfile
 import torch
+import time
 import numpy as np
 from typing import List, Optional
 
-from .base_vibevoice import BaseVibeVoiceNode
+from .base_vibevoice import BaseVibeVoiceNode, BufferedPyAudioStreamer
 
 # Setup logging
 logger = logging.getLogger("VibeVoice")
@@ -34,18 +35,26 @@ class VibeVoiceMultipleSpeakersNode(BaseVibeVoiceNode):
                     "forceInput": False,
                     "dynamicPrompts": True
                 }),
-                "model": (["VibeVoice-1.5B", "VibeVoice-7B-Preview"], {
-                    "default": "VibeVoice-7B-Preview",  # 7B recommended for multi-speaker
+                "model": (["VibeVoice-1.5B", "VibeVoice-7B", "VibeVoice-1.5B-no-llm-bf16", "VibeVoice-7B-no-llm-bf16"], {
+                    "default": "VibeVoice-7B-Preview",
                     "tooltip": "Model to use. VibeVoice-7B is recommended for multi-speaker generation"
                 }),
-                "attention_type": (["auto", "eager", "sdpa", "flash_attention_2"], {
+                "quantization_mode": (["bf16", "fp16", "bnb_nf4"], {
+                    "default": "bf16",
+                    "tooltip": "Default is bf16 (fast). bnb_nf4 - for low vram, 2 times slower."
+                }),
+                "exllama_model": (["None", "vibevoice-1.5b-exl3-8bit", "vibevoice-7b-exl3-8bit", "vibevoice-7b-exl3-6bit", "vibevoice-7b-exl3-4bit", "vibevoice-7b-exl3-3bit"], {
+                    "default": "None", 
+                    "tooltip": "exllama model to use. Should be used together with no-llm-bf16 model. Models are automatically downloaded to /models/vibevoice/"
+                }),
+                "attention_type": (["auto", "eager", "sdpa", "flash_attention_2", "sage"], {
                     "default": "auto",
                     "tooltip": "Attention implementation. Auto selects the best available, eager is standard, sdpa is optimized PyTorch, flash_attention_2 requires compatible GPU"
                 }),
                 "free_memory_after_generate": ("BOOLEAN", {"default": True, "tooltip": "Free model from memory after generation to save VRAM/RAM. Disable to keep model loaded for faster subsequent generations"}),
-                "diffusion_steps": ("INT", {"default": 20, "min": 5, "max": 100, "step": 1, "tooltip": "Number of denoising steps. More steps = better quality but slower. Default: 20"}),
+                "diffusion_steps": ("INT", {"default": 15, "min": 5, "max": 50, "step": 1, "tooltip": "Number of denoising steps. More steps = better quality but slower. Default: 20"}),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 2**32-1, "tooltip": "Random seed for generation. Default 42 is used in official examples"}),
-                "cfg_scale": ("FLOAT", {"default": 1.3, "min": 1.0, "max": 2.0, "step": 0.05, "tooltip": "Classifier-free guidance scale (official default: 1.3)"}),
+                "cfg_scale": ("FLOAT", {"default": 1.4, "min": 1.0, "max": 3.0, "step": 0.05, "tooltip": "Classifier-free guidance scale (official default: 1.3)"}),
                 "use_sampling": ("BOOLEAN", {"default": False, "tooltip": "Enable sampling mode. When False (default), uses deterministic generation like official examples"}),
             },
             "optional": {
@@ -55,6 +64,11 @@ class VibeVoiceMultipleSpeakersNode(BaseVibeVoiceNode):
                 "speaker4_voice": ("AUDIO", {"tooltip": "Optional: Voice sample for Speaker 4. If not provided, synthetic voice will be used."}),
                 "temperature": ("FLOAT", {"default": 0.95, "min": 0.1, "max": 2.0, "step": 0.05, "tooltip": "Only used when sampling is enabled"}),
                 "top_p": ("FLOAT", {"default": 0.95, "min": 0.1, "max": 1.0, "step": 0.05, "tooltip": "Only used when sampling is enabled"}),
+                "streaming": ("BOOLEAN", {"default": False, "tooltip": "Enable streaming mode, playback directly to your default audio device"}),
+                "streaming_buffer": ("INT", {"default": 5, "min": 1, "max": 100, "step": 1, "tooltip": "Seconds to buffer before playing when streaming. Default: 5"}),
+                "negative_llm_steps_to_cache": ("INT", {"default": 4, "min": 0, "max": 100, "tooltip": "Cache n steps of negative conditioning for speed-up. 0 - cache turned off for best quality; 10 - for speed (may cause noise on long text)"}),
+                "increase_cfg": ("BOOLEAN", {"default": False, "tooltip": "Increase CFG +50% for first 50% of diffusion steps (Experimental, for more emotions)"}),
+                "split_by_newline": ("BOOLEAN", {"default": True, "tooltip": "Split long text into chunks by each speaker"}),
             }
         }
 
@@ -68,100 +82,114 @@ class VibeVoiceMultipleSpeakersNode(BaseVibeVoiceNode):
         """Prepare a single voice sample from input audio"""
         return self._prepare_audio_from_comfyui(voice_audio)
     
+    def _convert_text_format(self, text: str) -> tuple:
+        """Convert text with [N]: format to Speaker (N-1): format and detect speakers"""
+        bracket_pattern = r'\[(\d+)\]\s*:'
+        speakers_numbers = sorted(list(set([int(m) for m in re.findall(bracket_pattern, text)])))
+        
+        # Limit to 1-4 speakers
+        if not speakers_numbers:
+            num_speakers = 1  # Default to 1 if no speaker format found
+        else:
+            num_speakers = min(max(speakers_numbers), 4)  # Max speaker number, capped at 4
+            if max(speakers_numbers) > 4:
+                print(f"[VibeVoice] Warning: Found {max(speakers_numbers)} speakers, limiting to 4")
+        
+        # Direct conversion from [N]: to Speaker (N-1): for VibeVoice processor
+        converted_text = text
+        
+        # Find all [N]: patterns in the text
+        speakers_in_text = sorted(list(set([int(m) for m in re.findall(bracket_pattern, text)])))
+        
+        if not speakers_in_text:
+            # No [N]: format found, try Speaker N: format
+            speaker_pattern = r'Speaker\s+(\d+)\s*:'
+            speakers_in_text = sorted(list(set([int(m) for m in re.findall(speaker_pattern, text)])))
+            
+            if speakers_in_text:
+                # Text already in Speaker N format, convert to 0-based
+                for speaker_num in sorted(speakers_in_text, reverse=True):
+                    pattern = f'Speaker\\s+{speaker_num}\\s*:'
+                    replacement = f'Speaker {speaker_num - 1}:'
+                    converted_text = re.sub(pattern, replacement, converted_text)
+            else:
+                # No speaker format found
+                speakers_in_text = [1]
+                # Clean up newlines before assigning to speaker
+                text_clean = text.replace('\n', ' ').replace('\r', ' ')
+                text_clean = ' '.join(text_clean.split())
+                converted_text = f"Speaker 0: {text_clean}"
+        else:
+            # Convert [N]: directly to Speaker (N-1): and handle multi-line text
+            # Split text to preserve speaker segments while cleaning up newlines within each segment
+            segments = []
+            
+            # Find all speaker markers with their positions
+            speaker_matches = list(re.finditer(f'\\[({"|".join(map(str, speakers_in_text))})\\]\\s*:', converted_text))
+            
+            for i, match in enumerate(speaker_matches):
+                speaker_num = int(match.group(1))
+                start = match.end()
+                
+                # Find where this speaker's text ends (at next speaker or end of text)
+                if i + 1 < len(speaker_matches):
+                    end = speaker_matches[i + 1].start()
+                else:
+                    end = len(converted_text)
+                
+                # Extract and clean the speaker's text
+                speaker_text = converted_text[start:end].strip()
+                # Replace newlines with spaces within each speaker's text
+                speaker_text = speaker_text.replace('\n', ' ').replace('\r', ' ')
+                # Clean up multiple spaces
+                speaker_text = ' '.join(speaker_text.split())
+                
+                # Add the cleaned segment with proper speaker label
+                segments.append(f'Speaker {speaker_num - 1}: {speaker_text}')
+            
+            # Join all segments with newlines (required for multi-speaker format)
+            converted_text = '\n'.join(segments)
+        
+        return converted_text, speakers_in_text
+    
+    def _get_speakers_in_chunk(self, chunk_text: str) -> list:
+        """Extract speaker indices from a text chunk"""
+        speaker_pattern = r'Speaker\s+(\d+)\s*:'
+        speakers = sorted(list(set([int(m) for m in re.findall(speaker_pattern, chunk_text)])))
+        return speakers
+    
     def generate_speech(self, text: str = "", model: str = "VibeVoice-7B-Preview",
                        attention_type: str = "auto", free_memory_after_generate: bool = True,
                        diffusion_steps: int = 20, seed: int = 42, cfg_scale: float = 1.3,
-                       use_sampling: bool = False, speaker1_voice=None, speaker2_voice=None, 
+                       use_sampling: bool = False, 
+                       speaker1_voice=None, speaker2_voice=None, 
                        speaker3_voice=None, speaker4_voice=None,
-                       temperature: float = 0.95, top_p: float = 0.95):
+                       temperature: float = 0.95, top_p: float = 0.95, quantization_mode = "bf16", 
+                       streaming = False, streaming_buffer = 10,
+                       exllama_model = "None", negative_llm_steps_to_cache: int = 0, 
+                       increase_cfg: bool=False, split_by_newline: bool=False):
         """Generate multi-speaker speech from text using VibeVoice"""
+        
+        audio_dict = None
         
         try:
             # Check text input
             if not text or not text.strip():
                 raise Exception("No text provided. Please enter text with speaker labels (e.g., '[1]: Hello' or '[2]: Hi')")
             
-            # First detect how many speakers are in the text
-            bracket_pattern = r'\[(\d+)\]\s*:'
-            speakers_numbers = sorted(list(set([int(m) for m in re.findall(bracket_pattern, text)])))
-            
-            # Limit to 1-4 speakers
-            if not speakers_numbers:
-                num_speakers = 1  # Default to 1 if no speaker format found
-            else:
-                num_speakers = min(max(speakers_numbers), 4)  # Max speaker number, capped at 4
-                if max(speakers_numbers) > 4:
-                    print(f"[VibeVoice] Warning: Found {max(speakers_numbers)} speakers, limiting to 4")
-            
-            # Direct conversion from [N]: to Speaker (N-1): for VibeVoice processor
-            # This avoids multiple conversion steps
-            converted_text = text
-            
-            # Find all [N]: patterns in the text
-            speakers_in_text = sorted(list(set([int(m) for m in re.findall(bracket_pattern, text)])))
-            
-            if not speakers_in_text:
-                # No [N]: format found, try Speaker N: format
-                speaker_pattern = r'Speaker\s+(\d+)\s*:'
-                speakers_in_text = sorted(list(set([int(m) for m in re.findall(speaker_pattern, text)])))
-                
-                if speakers_in_text:
-                    # Text already in Speaker N format, convert to 0-based
-                    for speaker_num in sorted(speakers_in_text, reverse=True):
-                        pattern = f'Speaker\\s+{speaker_num}\\s*:'
-                        replacement = f'Speaker {speaker_num - 1}:'
-                        converted_text = re.sub(pattern, replacement, converted_text)
-                else:
-                    # No speaker format found
-                    speakers_in_text = [1]
-                    # Clean up newlines before assigning to speaker
-                    text_clean = text.replace('\n', ' ').replace('\r', ' ')
-                    text_clean = ' '.join(text_clean.split())
-                    converted_text = f"Speaker 0: {text_clean}"
-            else:
-                # Convert [N]: directly to Speaker (N-1): and handle multi-line text
-                # Split text to preserve speaker segments while cleaning up newlines within each segment
-                segments = []
-                
-                # Find all speaker markers with their positions
-                speaker_matches = list(re.finditer(f'\\[({"|".join(map(str, speakers_in_text))})\\]\\s*:', converted_text))
-                
-                for i, match in enumerate(speaker_matches):
-                    speaker_num = int(match.group(1))
-                    start = match.end()
-                    
-                    # Find where this speaker's text ends (at next speaker or end of text)
-                    if i + 1 < len(speaker_matches):
-                        end = speaker_matches[i + 1].start()
-                    else:
-                        end = len(converted_text)
-                    
-                    # Extract and clean the speaker's text
-                    speaker_text = converted_text[start:end].strip()
-                    # Replace newlines with spaces within each speaker's text
-                    speaker_text = speaker_text.replace('\n', ' ').replace('\r', ' ')
-                    # Clean up multiple spaces
-                    speaker_text = ' '.join(speaker_text.split())
-                    
-                    # Add the cleaned segment with proper speaker label
-                    segments.append(f'Speaker {speaker_num - 1}: {speaker_text}')
-                
-                # Join all segments with newlines (required for multi-speaker format)
-                converted_text = '\n'.join(segments)
-            
-            # Build speaker names list - these are just for logging, not used by processor
-            # The processor uses the speaker labels in the text itself
-            speakers = [f"Speaker {i}" for i in range(len(speakers_in_text))]
-            
             # Get model mapping and load model with attention type
             model_mapping = self._get_model_mapping()
             model_path = model_mapping.get(model, model)
-            self.load_model(model_path, attention_type)
+            self.load_model(model_path, attention_type, quantization_mode, exllama_model)
             
+            # Prepare voice inputs
             voice_inputs = [speaker1_voice, speaker2_voice, speaker3_voice, speaker4_voice]
             
-            # Prepare voice samples in order of appearance
-            voice_samples = []
+            # Convert text format and detect speakers
+            converted_text, speakers_in_text = self._convert_text_format(text)
+            
+            # Prepare all voice samples (for all speakers in the entire text)
+            all_voice_samples = []
             for i, speaker_num in enumerate(speakers_in_text):
                 idx = speaker_num - 1  # Convert to 0-based for voice array
                 
@@ -175,18 +203,108 @@ class VibeVoiceMultipleSpeakersNode(BaseVibeVoiceNode):
                     # Use the actual speaker index for consistent synthetic voice
                     voice_sample = self._create_synthetic_voice_sample(idx)
                     
-                voice_samples.append(voice_sample)
+                all_voice_samples.append(voice_sample)
             
             # Ensure voice_samples count matches detected speakers
-            if len(voice_samples) != len(speakers_in_text):
-                logger.error(f"Mismatch: {len(speakers_in_text)} speakers but {len(voice_samples)} voice samples!")
-                raise Exception(f"Voice sample count mismatch: expected {len(speakers_in_text)}, got {len(voice_samples)}")
+            if len(all_voice_samples) != len(speakers_in_text):
+                logger.error(f"Mismatch: {len(speakers_in_text)} speakers but {len(all_voice_samples)} voice samples!")
+                raise Exception(f"Voice sample count mismatch: expected {len(speakers_in_text)}, got {len(all_voice_samples)}")
             
-            # Generate audio with converted text (0-based speaker indexing)
-            audio_dict = self._generate_with_vibevoice(
-                converted_text, voice_samples, cfg_scale, seed, diffusion_steps,
-                use_sampling, temperature, top_p
-            )
+            max_new_tokens = 32637
+            sample_rate = 24000
+            
+            # Split text into chunks if enabled
+            text_chunks = [converted_text.strip()]
+            if split_by_newline:
+                chunks = [chunk.strip() for chunk in converted_text.split('\n') if chunk.strip()]
+                if chunks:
+                    text_chunks = chunks
+            
+            if streaming and split_by_newline:
+                # Streaming mode with chunk processing
+                audio_streamer = BufferedPyAudioStreamer(sample_rate=sample_rate, buffer_duration=streaming_buffer)
+                audio_streamer.start_playback()
+
+                for chunk_text in text_chunks:
+                    # Reset the streamer's finished flag before processing the next chunk
+                    if hasattr(audio_streamer, 'finished_flags'):
+                        audio_streamer.finished_flags[0] = False
+                    
+                    # Get speakers present in this chunk
+                    chunk_speakers = self._get_speakers_in_chunk(chunk_text)
+                    
+                    # Prepare voice samples for only the speakers in this chunk
+                    chunk_voice_samples = []
+                    for speaker_idx in chunk_speakers:
+                        if speaker_idx < len(all_voice_samples):
+                            chunk_voice_samples.append(all_voice_samples[speaker_idx])
+                        else:
+                            # Fallback: use first voice sample if speaker index is out of range
+                            chunk_voice_samples.append(all_voice_samples[0])
+                    
+                    self._generate_with_vibevoice(
+                        chunk_text, 
+                        chunk_voice_samples, cfg_scale, seed, diffusion_steps, 
+                        use_sampling, temperature, top_p, 
+                        audio_streamer=audio_streamer,
+                        max_new_tokens=max_new_tokens,
+                        negative_llm_steps_to_cache=negative_llm_steps_to_cache,
+                        increase_cfg=increase_cfg
+                    )
+
+                audio_streamer.close()
+                while audio_streamer.playing:
+                    time.sleep(0.1)
+                
+                full_audio_np = audio_streamer.get_full_audio()
+                concatenated_waveform = (
+                    torch.from_numpy(full_audio_np).unsqueeze(0).unsqueeze(0)
+                    if full_audio_np.size > 0
+                    else torch.zeros(1, 1, int(0.5 * sample_rate), dtype=torch.float32)
+                )
+                audio_dict = {"waveform": concatenated_waveform, "sample_rate": sample_rate}
+
+            else:
+                # Non-streaming mode
+                all_audio_segments = []
+                for i, chunk_text in enumerate(text_chunks):
+                    # Get speakers present in this chunk
+                    chunk_speakers = self._get_speakers_in_chunk(chunk_text)
+                    
+                    # Prepare voice samples for only the speakers in this chunk
+                    chunk_voice_samples = []
+                    for speaker_idx in chunk_speakers:
+                        if speaker_idx < len(all_voice_samples):
+                            chunk_voice_samples.append(all_voice_samples[speaker_idx])
+                        else:
+                            # Fallback: use first voice sample if speaker index is out of range
+                            chunk_voice_samples.append(all_voice_samples[0])
+                    
+                    chunk_audio_dict = self._generate_with_vibevoice(
+                        chunk_text, 
+                        chunk_voice_samples, cfg_scale, seed, diffusion_steps, 
+                        use_sampling, temperature, top_p, 
+                        streaming=streaming, buffer_duration=streaming_buffer,
+                        max_new_tokens=max_new_tokens, 
+                        negative_llm_steps_to_cache=negative_llm_steps_to_cache, 
+                        increase_cfg=increase_cfg
+                    )
+                    
+                    if i == 0:
+                        sample_rate = chunk_audio_dict.get("sample_rate", 24000)
+                    
+                    waveform = chunk_audio_dict.get("waveform")
+                    if waveform is not None and waveform.numel() > 0:
+                        all_audio_segments.append(waveform)
+                
+                if not all_audio_segments:
+                    concatenated_waveform = torch.zeros(1, 1, int(0.5 * sample_rate), dtype=torch.float32)
+                elif len(all_audio_segments) > 1:
+                    concatenated_waveform = torch.cat(all_audio_segments, dim=-1)
+                else:
+                    concatenated_waveform = all_audio_segments[0]
+                
+                audio_dict = {"waveform": concatenated_waveform, "sample_rate": sample_rate}
             
             # Free memory if requested
             if free_memory_after_generate:
@@ -195,8 +313,19 @@ class VibeVoiceMultipleSpeakersNode(BaseVibeVoiceNode):
             return (audio_dict,)
                     
         except Exception as e:
-            logger.error(f"Multi-speaker speech generation failed: {str(e)}")
-            raise Exception(f"Error generating multi-speaker speech: {str(e)}")
+            import comfy.model_management as mm
+            if isinstance(e, mm.InterruptProcessingException):
+                logger.info("Generation interrupted by user.")
+                raise
+            else:
+                logger.error(f"Single speaker speech generation failed: {str(e)}")
+                self.free_memory()
+                # Check for shape mismatch error
+                if "shape mismatch" in str(e):
+                    raise Exception("Incorrect models are used. Make sure to use 2 corresponding models (7b-no-llm with 7b-exl3 or 1.5b-no-llm with 1.5b-exl3)")
+                else:
+                    raise Exception(f"Error generating speech: {str(e)}")
+                
 
     @classmethod
     def IS_CHANGED(cls, text="", model="VibeVoice-7B-Preview",

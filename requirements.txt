@@ -5,4 +5,7 @@ transformers>=4.51.3
 librosa>=0.9.0
 soundfile>=0.12.0
 av>=14.3.0
-git+https://github.com/microsoft/VibeVoice.git
+bitsandbytes
+accelerate
+pyaudio
+git+https://github.com/mozer/exllamav3.git

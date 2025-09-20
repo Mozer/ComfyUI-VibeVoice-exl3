@@ -107,16 +107,16 @@ if install_vibevoice():
         from .nodes.free_memory_node import VibeVoiceFreeMemoryNode
         
         # Single speaker node
-        NODE_CLASS_MAPPINGS["VibeVoiceSingleSpeakerNode"] = VibeVoiceSingleSpeakerNode
-        NODE_DISPLAY_NAME_MAPPINGS["VibeVoiceSingleSpeakerNode"] = "VibeVoice Single Speaker"
+        NODE_CLASS_MAPPINGS["VibeVoiceSingleSpeakerNodeExl3"] = VibeVoiceSingleSpeakerNode
+        NODE_DISPLAY_NAME_MAPPINGS["VibeVoiceSingleSpeakerNodeExl3"] = "VibeVoice Single Speaker Exl3"
         
         # Multi speaker node
-        NODE_CLASS_MAPPINGS["VibeVoiceMultipleSpeakersNode"] = VibeVoiceMultipleSpeakersNode
-        NODE_DISPLAY_NAME_MAPPINGS["VibeVoiceMultipleSpeakersNode"] = "VibeVoice Multiple Speakers"
+        NODE_CLASS_MAPPINGS["VibeVoiceMultipleSpeakersNodeExl3"] = VibeVoiceMultipleSpeakersNode
+        NODE_DISPLAY_NAME_MAPPINGS["VibeVoiceMultipleSpeakersNodeExl3"] = "VibeVoice Multiple Speakers Exl3"
         
         # Free memory node
-        NODE_CLASS_MAPPINGS["VibeVoiceFreeMemoryNode"] = VibeVoiceFreeMemoryNode
-        NODE_DISPLAY_NAME_MAPPINGS["VibeVoiceFreeMemoryNode"] = "VibeVoice Free Memory"
+        NODE_CLASS_MAPPINGS["VibeVoiceFreeMemoryNodeExl3"] = VibeVoiceFreeMemoryNode
+        NODE_DISPLAY_NAME_MAPPINGS["VibeVoiceFreeMemoryNodeExl3"] = "VibeVoice Free Memory Exl3"
         
     except Exception as e:
         logger.error(f"Failed to register VibeVoice nodes: {e}")

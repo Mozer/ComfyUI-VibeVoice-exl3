@@ -8,10 +8,124 @@ import torch
 import numpy as np
 import re
 from typing import List, Optional, Tuple, Any
+import threading
+import pyaudio
+from queue import Queue
+import time
 
 # Setup logging
 logger = logging.getLogger("VibeVoice")
 
+# Import for interruption support
+try:
+    import execution
+    INTERRUPTION_SUPPORT = True
+except ImportError:
+    INTERRUPTION_SUPPORT = False
+    logger.warning("Interruption support not available")
+
+# Check for SageAttention availability
+try:
+    from sageattention import sageattn
+    SAGE_AVAILABLE = True
+    logger.info("SageAttention available for acceleration")
+except ImportError:
+    SAGE_AVAILABLE = False
+    logger.debug("SageAttention not available - install with: pip install sageattention")
+
+def get_optimal_device():
+    """Get the best available device (cuda, mps, or cpu)"""
+    if torch.cuda.is_available():
+        return "cuda"
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return "mps"
+    else:
+        return "cpu"
+        
+class BufferedPyAudioStreamer:
+    """PyAudio-based streamer with buffer accumulation and full audio collection"""
+    def __init__(self, sample_rate=24000, buffer_duration=10.0):
+        self.sample_rate = sample_rate
+        self.buffer_duration = buffer_duration
+        self.buffer_samples = int(sample_rate * buffer_duration)
+        self.audio_queue = Queue()
+        # This flag is likely checked by the model, so we must manage it.
+        self.finished_flags = [False] 
+        self.playing = False
+        self.audio_thread = None
+        self.audio_buffer = np.array([], dtype=np.float32)
+        self.full_audio = np.array([], dtype=np.float32)
+
+    def put(self, audio_chunk, indices):
+        """Add audio chunk to the buffer and full audio collection"""
+        if isinstance(audio_chunk, torch.Tensor):
+            audio_chunk = audio_chunk.cpu().float().numpy()
+        
+        if audio_chunk.ndim > 1:
+            audio_chunk = audio_chunk.squeeze()
+            
+        self.full_audio = np.concatenate([self.full_audio, audio_chunk]) if self.full_audio.size else audio_chunk
+        self.audio_buffer = np.concatenate([self.audio_buffer, audio_chunk]) if self.audio_buffer.size else audio_chunk
+        
+        if len(self.audio_buffer) >= self.buffer_samples:
+            play_chunk = self.audio_buffer[:self.buffer_samples]
+            self.audio_buffer = self.audio_buffer[self.buffer_samples:]
+            self.audio_queue.put(play_chunk)
+
+    # --- CHANGED: This is now a "soft end" for flushing the buffer ---
+    def end(self, indices=None):
+        """
+        Called by model.generate() after each chunk.
+        Flushes the remaining audio buffer for the chunk but does NOT terminate the playback thread.
+        """
+        self.finished_flags[0] = True # Signal to the model this chunk is done.
+        
+        # If there's anything left in the buffer, queue it for playing.
+        if self.audio_buffer.size > 0:
+            play_chunk = self.audio_buffer.copy()
+            self.audio_buffer = np.array([], dtype=np.float32) # Clear the buffer
+            self.audio_queue.put(play_chunk)
+        # CRITICAL: We no longer put `None` in the queue here.
+
+    # --- NEW: This is the "hard end" to terminate the thread ---
+    def close(self):
+        """
+        Called once all chunks are processed.
+        Sends the termination signal (None) to the playback thread.
+        """
+        self.audio_queue.put(None)
+
+    def get_full_audio(self):
+        """Return the complete audio that was generated"""
+        return self.full_audio
+
+    def _audio_playback_thread(self):
+        """Thread function for audio playback (no changes needed here)"""
+        p = pyaudio.PyAudio()
+        stream = p.open(format=pyaudio.paFloat32, channels=1, rate=self.sample_rate, output=True)
+        self.playing = True
+        try:
+            while self.playing:
+                chunk = self.audio_queue.get()
+                if chunk is None:
+                    break # The thread will exit cleanly when it receives None
+                stream.write(chunk.astype(np.float32).tobytes())
+        except Exception as e:
+            logger.error(f"Audio playback error: {e}")
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            self.playing = False
+
+    def start_playback(self):
+        """Start the audio playback thread (no changes needed here)"""
+        if self.audio_thread is None or not self.audio_thread.is_alive():
+            self.audio_thread = threading.Thread(target=self._audio_playback_thread)
+            self.audio_thread.daemon = True
+            self.audio_thread.start()
+            
+            
 class BaseVibeVoiceNode:
     """Base class for VibeVoice nodes containing common functionality"""
     
@@ -20,10 +134,15 @@ class BaseVibeVoiceNode:
         self.processor = None
         self.current_model_path = None
         self.current_attention_type = None
-    
+        self.current_quantization_mode = None # NEW: Track current quantization mode
+        
     def free_memory(self):
         """Free model and processor from memory"""
         try:
+            if self.model.exllama is not None:
+                self.model.exllama.unload()
+                self.model.exllama = None    
+            
             if self.model is not None:
                 del self.model
                 self.model = None
@@ -31,8 +150,10 @@ class BaseVibeVoiceNode:
             if self.processor is not None:
                 del self.processor
                 self.processor = None
+                
             
             self.current_model_path = None
+            self.current_quantization_mode = None # NEW: Reset quantization mode                                                                                
             
             # Force garbage collection and clear CUDA cache if available
             import gc
@@ -50,52 +171,234 @@ class BaseVibeVoiceNode:
     def _check_dependencies(self):
         """Check if VibeVoice is available and import it with fallback installation"""
         try:
-            import vibevoice
-            from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
-            return vibevoice, VibeVoiceForConditionalGenerationInference
+            import sys
+            import os
+            import shutil
+            
+            # Add vvembed to path
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(current_dir)
+            vvembed_path = os.path.join(parent_dir, 'vvembed')
+            
+            # Remove any existing vibevoice modules to force re-import from new path
+            for module_name in list(sys.modules.keys()):
+                if module_name.startswith('vibevoice'):
+                    del sys.modules[module_name]
+            
+            # Insert the embedded path at the beginning of sys.path
+            if vvembed_path not in sys.path:
+                sys.path.insert(0, vvembed_path)
+            
+            print(f"Using embedded VibeVoice from {vvembed_path}")
+            
+            # Import from embedded version
+            from modular.modeling_vibevoice_inference import (
+                VibeVoiceForConditionalGenerationInference, 
+                ExLlamaV3Wrapper
+            )
+            return None, VibeVoiceForConditionalGenerationInference, ExLlamaV3Wrapper
             
         except ImportError as e:
-            # Try to install and import again
-            try:
-                import subprocess
-                import sys
-                
-                # First ensure compatible transformers version
-                transformers_cmd = [sys.executable, "-m", "pip", "install", "transformers>=4.44.0"]
-                subprocess.run(transformers_cmd, capture_output=True, text=True, timeout=300)
-                
-                cmd = [sys.executable, "-m", "pip", "install", "git+https://github.com/microsoft/VibeVoice.git"]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-                
-                if result.returncode == 0:
-                    # Force reload of sys.modules to pick up new installation
-                    import importlib
-                    if 'vibevoice' in sys.modules:
-                        importlib.reload(sys.modules['vibevoice'])
-                    
-                    # Try import again
-                    import vibevoice
-                    from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
-                    return vibevoice, VibeVoiceForConditionalGenerationInference
-                    
-            except Exception as install_error:
-                logger.error(f"Installation attempt failed: {install_error}")
+            print(f"Embedded VibeVoice import failed: {e}")
             
-            logger.error(f"VibeVoice import failed: {e}")
+            # Try fallback to installed version if available
+            try:
+                import vibevoice
+                from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
+                print("Falling back to system-installed VibeVoice")
+                return vibevoice, VibeVoiceForConditionalGenerationInference
+            except ImportError:
+                pass
+            
             raise Exception(
-                "VibeVoice installation/import failed. Please restart ComfyUI completely, "
-                "or install manually with: pip install transformers>=4.44.0 && pip install git+https://github.com/microsoft/VibeVoice.git"
-            )
+                "VibeVoice embedded module import failed. Please ensure the vvembed folder exists "
+                "and transformers>=4.51.3 is installed."
+            )            
     
-    def load_model(self, model_path: str, attention_type: str = "auto"):
-        """Load VibeVoice model with specified attention implementation"""
-        # Check if we need to reload model due to attention type change
-        current_attention = getattr(self, 'current_attention_type', None)
+    def _apply_sage_attention(self):
+        """Apply SageAttention to the loaded model by monkey-patching attention layers"""
+        try:
+            from sageattention import sageattn
+            import torch.nn.functional as F
+            
+            # Counter for patched layers
+            patched_count = 0
+            
+            def patch_attention_forward(module):
+                """Recursively patch attention layers to use SageAttention"""
+                nonlocal patched_count
+                
+                # Check if this module has scaled_dot_product_attention
+                if hasattr(module, 'forward'):
+                    original_forward = module.forward
+                    
+                    # Create wrapper that replaces F.scaled_dot_product_attention with sageattn
+                    def sage_forward(*args, **kwargs):
+                        # Temporarily replace F.scaled_dot_product_attention
+                        original_sdpa = F.scaled_dot_product_attention
+                        
+                        def sage_sdpa(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, **kwargs):
+                            """Wrapper that converts sdpa calls to sageattn"""
+                            # Log any unexpected parameters for debugging
+                            if kwargs:
+                                unexpected_params = list(kwargs.keys())
+                                logger.debug(f"SageAttention: Ignoring unsupported parameters: {unexpected_params}")
+                            
+                            try:
+                                # SageAttention expects tensors in specific format
+                                # Transformers typically use (batch, heads, seq_len, head_dim)
+                                
+                                # Check tensor dimensions to determine layout
+                                if query.dim() == 4:
+                                    # 4D tensor: (batch, heads, seq, dim)
+                                    batch_size = query.shape[0]
+                                    num_heads = query.shape[1]
+                                    seq_len_q = query.shape[2]
+                                    seq_len_k = key.shape[2]
+                                    head_dim = query.shape[3]
+                                    
+                                    # Reshape to (batch*heads, seq, dim) for HND layout
+                                    query_reshaped = query.reshape(batch_size * num_heads, seq_len_q, head_dim)
+                                    key_reshaped = key.reshape(batch_size * num_heads, seq_len_k, head_dim)
+                                    value_reshaped = value.reshape(batch_size * num_heads, seq_len_k, head_dim)
+                                    
+                                    # Call sageattn with HND layout
+                                    output = sageattn(
+                                        query_reshaped, key_reshaped, value_reshaped,
+                                        is_causal=is_causal,
+                                        tensor_layout="HND"  # Heads*batch, seqN, Dim
+                                    )
+                                    
+                                    # Output should be (batch*heads, seq_len_q, head_dim)
+                                    # Reshape back to (batch, heads, seq, dim)
+                                    if output.dim() == 3:
+                                        output = output.reshape(batch_size, num_heads, seq_len_q, head_dim)
+                                    
+                                    return output
+                                else:
+                                    # For 3D tensors, assume they're already in HND format
+                                    output = sageattn(
+                                        query, key, value,
+                                        is_causal=is_causal,
+                                        tensor_layout="HND"
+                                    )
+                                    return output
+                                    
+                            except Exception as e:
+                                # If SageAttention fails, fall back to original implementation
+                                logger.debug(f"SageAttention failed, using original: {e}")
+                                # Call with proper arguments - scale is a keyword argument in PyTorch 2.0+
+                                # Pass through any additional kwargs that the original sdpa might support
+                                if scale is not None:
+                                    return original_sdpa(query, key, value, attn_mask=attn_mask, 
+                                                       dropout_p=dropout_p, is_causal=is_causal, scale=scale, **kwargs)
+                                else:
+                                    return original_sdpa(query, key, value, attn_mask=attn_mask, 
+                                                       dropout_p=dropout_p, is_causal=is_causal, **kwargs)
+                        
+                        # Replace the function
+                        F.scaled_dot_product_attention = sage_sdpa
+                        
+                        try:
+                            # Call original forward with patched attention
+                            result = original_forward(*args, **kwargs)
+                        finally:
+                            # Restore original function
+                            F.scaled_dot_product_attention = original_sdpa
+                        
+                        return result
+                    
+                    # Check if this module likely uses attention
+                    # Look for common attention module names
+                    module_name = module.__class__.__name__.lower()
+                    if any(name in module_name for name in ['attention', 'attn', 'multihead']):
+                        module.forward = sage_forward
+                        patched_count += 1
+                
+                # Recursively patch child modules
+                for child in module.children():
+                    patch_attention_forward(child)
+            
+            # Apply patching to the entire model
+            patch_attention_forward(self.model)
+            
+            logger.info(f"Patched {patched_count} attention layers with SageAttention")
+            
+            if patched_count == 0:
+                logger.warning("No attention layers found to patch - SageAttention may not be applied")
+                
+        except Exception as e:
+            logger.error(f"Failed to apply SageAttention: {e}")
+            logger.warning("Continuing with standard attention implementation")                                                           
+    
+    def _load_exllama_model(self, exllama_model_handle: str, comfyui_models_dir: str):
+        """Load ExLlama model with download if not found locally"""
+        try:
+            mapping = self._get_model_mapping()
+            if exllama_model_handle not in mapping:
+                raise ValueError(f"ExLlama model handle {exllama_model_handle} not found in model mapping")
+
+            model_path = mapping[exllama_model_handle]
+            # The local directory in ComfyUI for this model
+            model_dir = os.path.join(comfyui_models_dir, f"models--{model_path.replace('/', '--')}")
+
+            # Check if the model exists locally, else download
+            if not os.path.exists(model_dir):
+                from huggingface_hub import snapshot_download
+                logger.info(f"Downloading ExLlama model {model_path} to {model_dir}")
+                model_dir = snapshot_download(repo_id=model_path, cache_dir=comfyui_models_dir)
+
+            # Determine the actual model directory (handle both old and new structures)
+            actual_model_dir = model_dir
+            if not os.path.exists(os.path.join(model_dir, "model.safetensors")):
+                # Check for snapshots directory
+                snapshots_dir = os.path.join(model_dir, "snapshots")
+                if os.path.exists(snapshots_dir):
+                    # Get all snapshot subdirectories
+                    snapshots = [d for d in os.listdir(snapshots_dir) 
+                               if os.path.isdir(os.path.join(snapshots_dir, d))]
+                    if snapshots:
+                        # Use the first snapshot directory (typically only one exists)
+                        actual_model_dir = os.path.join(snapshots_dir, snapshots[0])
+                    else:
+                        raise FileNotFoundError("No snapshot directories found in {snapshots_dir}")
+                else:
+                    raise FileNotFoundError("model.safetensors not found in root and no snapshots directory")
+
+            # Now load the ExLlama model from actual_model_dir
+            from exllamav3 import Config, Model, Cache
+            exllama_config = Config.from_directory(actual_model_dir)
+            exllama_model = Model.from_config(exllama_config)
+            exllama_positive_cache = Cache(exllama_model, max_num_tokens=2048)
+            exllama_negative_cache = Cache(exllama_model, max_num_tokens=2048)
+            exllama_model.load()
+
+            from modular.modeling_vibevoice_inference import ExLlamaV3Wrapper
+            return ExLlamaV3Wrapper(
+                model=exllama_model,
+                positive_cache=exllama_positive_cache,
+                negative_cache=exllama_negative_cache,
+                config=exllama_config
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to load ExLlama model: {e}")
+            raise
+        
+    
+    def load_model(self, model_path: str, attention_type: str = "auto", quantization_mode: str = "bf16", exllama_model: str = "None" ):
+        """Load VibeVoice model with specified attention implementation and quantization"""        
+        
+        # NEW: Update the check to include quantization_mode
         if (self.model is None or 
             getattr(self, 'current_model_path', None) != model_path or
-            current_attention != attention_type):
+            getattr(self, 'current_attention_type', None) != attention_type or
+            getattr(self, 'current_quantization_mode', None) != quantization_mode or
+            getattr(self, 'current_exllama_model', None) != exllama_model):
             try:
-                vibevoice, VibeVoiceInferenceModel = self._check_dependencies()
+                vibevoice, VibeVoiceInferenceModel, ExLlamaV3Wrapper = self._check_dependencies()
+                
+                self.free_memory()
                 
                 # Set ComfyUI models directory
                 import folder_paths
@@ -109,6 +412,7 @@ class BaseVibeVoiceNode:
                 
                 os.environ['HF_HOME'] = comfyui_models_dir
                 os.environ['HUGGINGFACE_HUB_CACHE'] = comfyui_models_dir
+                use_exllama = False
                 
                 # Import time for timing
                 import time
@@ -127,13 +431,85 @@ class BaseVibeVoiceNode:
                 # Prepare attention implementation kwargs
                 model_kwargs = {
                     "cache_dir": comfyui_models_dir,
-                    "trust_remote_code": True,
-                    "torch_dtype": torch.bfloat16,
+                    "trust_remote_code": True,                    
                     "device_map": "cuda" if torch.cuda.is_available() else "cpu",
                 }
                 
+                if exllama_model != "None":
+                    use_exllama = True
+                    
+                config = None  # Initialize config variable    
+                
+                if use_exllama:
+                    print(f"exllama model {exllama_model} is loading...")
+                    exllama_wrapper = self._load_exllama_model(exllama_model, comfyui_models_dir)
+                
+                # NEW: Configure quantization based on the selected mode
+                if quantization_mode == "bnb_nf4":
+                    logger.info("Loading model with bnb_nf4 quantization to reduce VRAM.")
+                    try:
+                        from transformers import BitsAndBytesConfig
+                    except ImportError:
+                        logger.error("bitsandbytes is not installed. Please install it with: pip install bitsandbytes")
+                        raise ImportError("The 'bitsandbytes' library is required for bnb_nf4 quantization.")
+
+                    if not torch.cuda.is_available():
+                        raise ValueError("bnb_nf4 quantization requires a CUDA-enabled GPU.")
+
+                    # Define the 4-bit quantization configuration
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.bfloat16, # Compute in bf16 for speed and precision
+                        bnb_4bit_use_double_quant=True,
+                    )
+                    model_kwargs["quantization_config"] = quantization_config
+                    # torch_dtype is handled by the compute_dtype in BitsAndBytesConfig
+                    
+                elif quantization_mode == "bnb_8bit":
+                    logger.info("Loading model with bnb_8bit quantization.")
+                    try:
+                        # Ensure bitsandbytes is available
+                        import bitsandbytes
+                    except ImportError:
+                        logger.error("bitsandbytes is not installed. Please install it with: pip install bitsandbytes")
+                        raise ImportError("The 'bitsandbytes' library is required for bnb_8bit quantization.")
+
+                    if not torch.cuda.is_available():
+                        raise ValueError("bnb_8bit quantization requires a CUDA-enabled GPU.")                    
+                    model_kwargs["load_in_8bit"] = True
+                    
+                elif quantization_mode == "bf16":
+                    logger.info("Loading model in bfloat16 (original behavior).")
+                    model_kwargs["torch_dtype"] = torch.bfloat16
+                    
+                elif quantization_mode == "fp16":
+                    logger.info("Loading model in float16.")
+                    model_kwargs["torch_dtype"] = torch.float16     
+                    
+                elif quantization_mode == "float8_e4m3fn":
+                    logger.info("Loading model in float8_e4m3fn")
+                    model_kwargs["torch_dtype"] = torch.float8_e4m3fn
+                
+                else: # Default to float32 if an unknown mode is given
+                    logger.info("Loading model in float32.")
+
                 # Set attention implementation based on user selection
-                if attention_type != "auto":
+                use_sage_attention = False
+                if attention_type == "sage":
+                    # SageAttention requires special handling - can't be set via attn_implementation
+                    if not SAGE_AVAILABLE:
+                        logger.warning("SageAttention not installed, falling back to sdpa")
+                        logger.warning("Install with: pip install sageattention")
+                        model_kwargs["attn_implementation"] = "sdpa"
+                    elif not torch.cuda.is_available():
+                        logger.warning("SageAttention requires CUDA GPU, falling back to sdpa")
+                        model_kwargs["attn_implementation"] = "sdpa"
+                    else:
+                        # Don't set attn_implementation for sage, will apply after loading
+                        use_sage_attention = True
+                        logger.info("Will apply SageAttention after model loading")
+                elif attention_type != "auto":
                     model_kwargs["attn_implementation"] = attention_type
                     logger.info(f"Using {attention_type} attention implementation")
                 else:
@@ -141,7 +517,7 @@ class BaseVibeVoiceNode:
                     logger.info("Using auto attention implementation selection")
                 
                 # Try to load locally first
-                try:
+                try:                        
                     if model_exists_in_comfyui:
                         model_kwargs["local_files_only"] = True
                         self.model = VibeVoiceInferenceModel.from_pretrained(
@@ -152,7 +528,6 @@ class BaseVibeVoiceNode:
                         raise FileNotFoundError("Model not found locally")
                 except (FileNotFoundError, OSError) as e:
                     logger.info(f"Downloading {model_path}...")
-                    
                     model_kwargs["local_files_only"] = False
                     self.model = VibeVoiceInferenceModel.from_pretrained(
                         model_path,
@@ -161,6 +536,10 @@ class BaseVibeVoiceNode:
                     elapsed = time.time() - start_time
                 else:
                     elapsed = time.time() - start_time
+                    
+                # Assign the pre-loaded ExLlama wrapper to the HF model
+                if use_exllama:
+                    self.model.exllama = exllama_wrapper               
                 
                 # Load processor
                 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
@@ -177,16 +556,24 @@ class BaseVibeVoiceNode:
                 elif 'HUGGINGFACE_HUB_CACHE' in os.environ:
                     del os.environ['HUGGINGFACE_HUB_CACHE']
                 
-                # Move to appropriate device
-                if torch.cuda.is_available():
-                    self.model = self.model.cuda()
+                # Apply SageAttention if requested and available
+                if use_sage_attention and SAGE_AVAILABLE:
+                    self._apply_sage_attention()
+                    logger.info("SageAttention successfully applied to model")
                     
                 self.current_model_path = model_path
                 self.current_attention_type = attention_type
-                
+                self.current_quantization_mode = quantization_mode # NEW: Save the current mode
+                self.current_exllama_model = exllama_model # NEW: Save the current mode
             except Exception as e:
                 logger.error(f"Failed to load VibeVoice model: {str(e)}")
-                raise Exception(f"Model loading failed: {str(e)}")
+                if 'exllama_wrapper' in locals():
+                    exllama_wrapper.unload()
+                    exllama_wrapper = None    
+                    print("deleting exllama_wrapper")
+                    del exllama_wrapper
+                self.free_memory()
+                raise Exception(f"Base model loading failed: {str(e)}")
     
     def _create_synthetic_voice_sample(self, speaker_idx: int) -> np.ndarray:
         """Create synthetic voice sample for a specific speaker"""
@@ -270,7 +657,14 @@ class BaseVibeVoiceNode:
         """Get model name mappings"""
         return {
             "VibeVoice-1.5B": "microsoft/VibeVoice-1.5B",
-            "VibeVoice-7B-Preview": "WestZhang/VibeVoice-Large-pt"
+            "VibeVoice-7B": "aoi-ot/VibeVoice-Large",
+            "VibeVoice-1.5B-no-llm-bf16": "tensorbanana/vibevoice-1.5b-no-llm-bf16",
+            "VibeVoice-7B-no-llm-bf16": "tensorbanana/vibevoice-7b-no-llm-bf16",
+            "vibevoice-1.5b-exl3-8bit": "tensorbanana/vibevoice-1.5b-exl3-8bit",
+            "vibevoice-7b-exl3-8bit": "tensorbanana/vibevoice-7b-exl3-8bit",
+            "vibevoice-7b-exl3-6bit": "tensorbanana/vibevoice-7b-exl3-6bit",
+            "vibevoice-7b-exl3-4bit": "tensorbanana/vibevoice-7b-exl3-4bit",
+            "vibevoice-7b-exl3-3bit": "tensorbanana/vibevoice-7b-exl3-3bit",
         }
     
     def _format_text_for_vibevoice(self, text: str, speakers: list) -> str:
@@ -299,99 +693,114 @@ class BaseVibeVoiceNode:
                 return f"Speaker 1: {text}"
     
     def _generate_with_vibevoice(self, formatted_text: str, voice_samples: List[np.ndarray], 
-                                cfg_scale: float, seed: int, diffusion_steps: int, use_sampling: bool,
-                                temperature: float = 0.95, top_p: float = 0.95) -> dict:
-        """Generate audio using VibeVoice model"""
+                             cfg_scale: float, seed: int, diffusion_steps: int, use_sampling: bool,
+                             temperature: float = 0.95, top_p: float = 0.95, 
+                             streaming: bool = False, buffer_duration: float = 10.0, 
+                             max_new_tokens = 32637, negative_llm_steps_to_cache = 0, 
+                             increase_cfg=False,
+                             audio_streamer: BufferedPyAudioStreamer = None) -> dict:
+        """Generate audio using VibeVoice model with optional streaming and returning full audio"""
         try:
-            # Ensure model and processor are loaded
             if self.model is None or self.processor is None:
                 raise Exception("Model or processor not loaded")
             
-            # Set seeds for reproducibility
             torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed(seed)
-                torch.cuda.manual_seed_all(seed)  # For multi-GPU
-            
-            # Also set numpy seed for any numpy operations
             np.random.seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
             
-            # Set diffusion steps
+            self.model.negative_llm_steps_to_cache = negative_llm_steps_to_cache
+            self.model.increase_cfg = increase_cfg
             self.model.set_ddpm_inference_steps(diffusion_steps)
-            logger.info(f"Starting audio generation with {diffusion_steps} diffusion steps...")
             
-            # Prepare inputs using processor
-            inputs = self.processor(
-                [formatted_text],  # Wrap text in list
-                voice_samples=[voice_samples], # Provide voice samples for reference
-                return_tensors="pt",
-                return_attention_mask=True
-            )
-            
-            # Move to device
+            local_streamer = audio_streamer
+            is_streaming_active = (local_streamer is not None) or streaming
+            if local_streamer is None and streaming:
+                local_streamer = BufferedPyAudioStreamer(sample_rate=24000, buffer_duration=buffer_duration)
+                local_streamer.start_playback()
+
+            inputs = self.processor([formatted_text], voice_samples=[voice_samples], return_tensors="pt", return_attention_mask=True)
             device = next(self.model.parameters()).device
-            inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+            inputs = {
+                k: v.to(device) if hasattr(v, 'to') else v 
+                for k, v in inputs.items()
+            }
+
+            stop_check_fn = None
+            if INTERRUPTION_SUPPORT:
+                # --- THIS IS THE CRITICAL CHANGE ---
+                # This function will now throw the exception instead of catching it and returning True.
+                # This allows the exception to propagate up and stop the main chunk processing loop.
+                def comfyui_stop_check():
+                    import comfy.model_management as mm
+                    # This line will now raise InterruptProcessingException if the user clicks stop.
+                    mm.throw_exception_if_processing_interrupted()
+                    # The function no longer needs to return anything, as the exception will halt execution.
+                    # However, your inference loop checks the return value, so we return False if not interrupted.
+                    return False 
             
-            # Estimate tokens for user information (not used as limit)
-            text_length = len(formatted_text.split())
-            estimated_tokens = text_length * 2  # More accurate estimate for display
-            
-            # Log generation start with explanation
-            logger.info(f"Generating audio with {diffusion_steps} diffusion steps...")
-            logger.info(f"Note: Progress bar shows max possible tokens, not actual needed (~{estimated_tokens} estimated)")
-            logger.info("The generation will stop automatically when audio is complete")
-            
-            # Generate with official parameters
+                # We need to wrap the actual function call in your inference loop logic.
+                # So we create a wrapper that returns True on exception for the break,
+                # but more importantly, we let the original exception propagate.
+                # A better way is to modify the inference loop, but let's change the check function instead.
+                
+                # Re-thinking: The simplest change is to NOT catch the exception.
+                # Your inference loop is not shown, but it likely calls this function.
+                # The key is to let the exception happen. Let's simplify the check function entirely.
+                
+                def final_stop_check():
+                    import comfy.model_management as mm
+                    # The call to model.generate is inside a try/except block.
+                    # When this throws, it will be caught and propagated correctly.
+                    # The `if stop_check_fn()` in your inference loop will never complete if an exception is thrown.
+                    mm.throw_exception_if_processing_interrupted()
+
+                stop_check_fn = final_stop_check
+
             with torch.no_grad():
+                gen_kwargs = {
+                    "tokenizer": self.processor.tokenizer,
+                    "cfg_scale": cfg_scale,
+                    "max_new_tokens": max_new_tokens,
+                    "audio_streamer": local_streamer,
+                    "return_speech": not is_streaming_active,
+                    # Pass the function directly. The model's generate loop must call it.
+                    "stop_check_fn": stop_check_fn,
+                }
                 if use_sampling:
-                    # Use sampling mode (less stable but more varied)
-                    output = self.model.generate(
-                        **inputs,
-                        tokenizer=self.processor.tokenizer,
-                        cfg_scale=cfg_scale,
-                        max_new_tokens=None,
-                        do_sample=True,
-                        temperature=temperature,
-                        top_p=top_p,
-                    )
+                    gen_kwargs.update({"do_sample": True, "temperature": temperature, "top_p": top_p})
                 else:
-                    # Use deterministic mode like official examples
-                    output = self.model.generate(
-                        **inputs,
-                        tokenizer=self.processor.tokenizer,
-                        cfg_scale=cfg_scale,
-                        max_new_tokens=None,
-                        do_sample=False,  # More deterministic generation
-                    )
+                    gen_kwargs["do_sample"] = False
                 
-                # Check if we got actual audio output
-                if hasattr(output, 'speech_outputs') and output.speech_outputs:
-                    speech_tensors = output.speech_outputs
-                    
-                    if isinstance(speech_tensors, list) and len(speech_tensors) > 0:
-                        audio_tensor = torch.cat(speech_tensors, dim=-1)
-                    else:
-                        audio_tensor = speech_tensors
-                    
-                    # Ensure proper format (1, 1, samples)
-                    if audio_tensor.dim() == 1:
-                        audio_tensor = audio_tensor.unsqueeze(0).unsqueeze(0)
-                    elif audio_tensor.dim() == 2:
-                        audio_tensor = audio_tensor.unsqueeze(0)
-                    
-                    return {
-                        "waveform": audio_tensor.cpu(),
-                        "sample_rate": 24000
-                    }
-                    
-                elif hasattr(output, 'sequences'):
-                    logger.error("VibeVoice returned only text tokens, no audio generated")
-                    raise Exception("VibeVoice failed to generate audio - only text tokens returned")
-                    
+                # The model.generate call is what needs to be interrupted.
+                output = self.model.generate(**inputs, **gen_kwargs)
+                
+            if is_streaming_active and local_streamer:
+                if audio_streamer is None:
+                    local_streamer.end()
+                    while local_streamer.playing:
+                        time.sleep(0.1)
+                    full_audio_np = local_streamer.get_full_audio()
+                    waveform = torch.from_numpy(full_audio_np).unsqueeze(0).unsqueeze(0) if full_audio_np.size > 0 else None
                 else:
-                    logger.error(f"Unexpected output format from VibeVoice: {type(output)}")
-                    raise Exception(f"VibeVoice returned unexpected output format: {type(output)}")
-                
+                    return {"waveform": None, "sample_rate": 24000, "streamed": True}
+
+                return {"waveform": waveform, "sample_rate": 24000, "streamed": True}
+            else:
+                speech_tensors = getattr(output, 'speech_outputs', None)
+                if not speech_tensors:
+                    raise Exception("VibeVoice failed to generate audio.")
+
+                audio_tensor = speech_tensors[0] if isinstance(speech_tensors, list) else speech_tensors
+                if audio_tensor.dtype == torch.bfloat16:
+                    audio_tensor = audio_tensor.to(torch.float32)
+
+                return {"waveform": audio_tensor.cpu().unsqueeze(0), "sample_rate": 24000, "streamed": False}
+                    
         except Exception as e:
+            # This block will now catch InterruptProcessingException from the generate call.
             logger.error(f"VibeVoice generation failed: {e}")
-            raise Exception(f"VibeVoice generation failed: {str(e)}")
+            if 'local_streamer' in locals() and local_streamer and audio_streamer is None:
+                local_streamer.end()
+            # Re-raise the exception so the main `generate_speech` function can catch it and stop.
+            raise       

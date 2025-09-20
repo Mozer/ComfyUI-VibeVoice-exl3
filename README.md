@@ -1,8 +1,81 @@
-# VibeVoice ComfyUI Nodes
+# VibeVoice ComfyUI Nodes with exl3 support and realtime speed
 
 A comprehensive ComfyUI integration for Microsoft's VibeVoice text-to-speech model, enabling high-quality single and multi-speaker voice synthesis directly within your ComfyUI workflows.
 
-## Features
+Original vibevoice-7b works like this: 2 LLM passes (positive+negative) + diffusion based on these two passes. 
+
+## Optimizations
+- i took original comfy nodes from https://github.com/Enemyx-net/VibeVoice-ComfyUI
+- i replaced LLM engine from HF-transformers to exllamav3 (now LLM stage is 3 times faster)
+- i replaced 2 passes of LLM with one, but with a cache for the negative pass
+- reduced the number of steps to 5 (the fewer the steps, the less variability)
+- added paragraph split for input text (vibevoice starts to glitch on long text)
+- I haven't touched diffusion yet, think there is an option to attach some TeaCache
+- added streaming playback with 1s buffer. Playback now starts almost instantly
+
+
+## Requirements:
+- nvidia 3000+ (the 2000 series is not compatible with exllamav3, but the node can be run without exllamav3)
+- at least 8 GB vram (preferably 12 GB)
+- flash-attention-2 (exllamav3 does not work without it)
+- my modified exllamav3
+- models must be fully loaded into vram, there is no partial offloading
+
+## VRAM consumption and speed:
+- 7b-exl-8bit + no-llm-bf16 - 12.6GB
+- 7b-exl-4bit + no-llm-bf16 - 9.5GB (realtime at 3090, 9.00 it/s)
+- 7b-exl-4bit + no-llm-nf4 - 7.3GB (nf4 is 1.5 times slower)
+- 1.5b-exl-8bit + no-llm-nf4 - 4.7GB
+
+- qll exl3 quants run the same speed. But 4bit is a little faster. 
+- the nvidia 3060 is only 20% slower than the 3090.
+
+## Installation
+- Windows: install precompiled flash-attention-2 and exllamav3 then install these comfy nodes
+- Linux: install as comfyUI nodes
+
+flash-attention-2
+It's difficult to compile under Windows, so here are the links for the compiled whl for flash-attention-2:
+here https://huggingface.co/lldacing/flash-attention-windows-wheel/tree/main
+or here https://github.com/NeedsMoar/flash-attention-2-builds/releases
+
+ You can find out your version of Python, Torch, cuda in comfyui - menu - Help - about
+
+Below, I'm using python 3.11, torch 2.6.0, and cuda126. For other versions, please refer to the links above (or compile yourself). For flash-attention, it's important to match the version of python, torch, and cuda. For exllama, the main requirement is that the version of python matches.
+
+cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_embeded
+python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4%2Bcu126torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
+
+exllamav3-v0.0.6
+then install exllamav3 v0.0.6 drom here https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6
+I used this one:
+python.exe -m pip install https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl
+
+If you can't find any suitable compiled versions, you can compile them yourself using the following guide: https://www.reddit.com/r/Oobabooga/comments/1jq3uj9/guide_getting_flash_attention_2_working_on/
+ I couldn't compile exllamav3 on my 3090 because it complained that the architecture was old (?!), so I gave up and installed it using the whl link.
+
+An interesting fact: only the cuda code of exllama is compiled, and I haven't modified it, so the whl file is compatible with the original exllamav3-v0.0.6. The code in the node uses my modified python code repository.
+
+ After that, install my nodes using the comfyui manager - install via git url:
+https://github.com/mozer/comfyUI-vibevoice-exl3
+Or via: `cd ComfyUI/custom_nodes && git clone https://github.com/mozer/comfyUI-vibevoice-exl3`
+Restart comfyui.
+
+Workflow with wav2lip (wav2lip is optional): LINK
+You don't need to download the models manually. They are dowloaded automatically. But if you really want to, they're available here: https://huggingface.co/collections/tensorbanana/vibevoice-68cd1bac5766dc65e90380c1
+ If you're going to upload them manually, make sure to study the folder structure first (HF-downloader uses this method). example: /models/vibevoice/models--tensorbanana--vibevoice-1.5b-exl3-8bit/snapshots/badfbb16dd63a1a8e633ba6eb138a21303ed1325/model.safetensors
+
+- You need to load 2 models at once into the node, example: VibeVoice-7B-no-llm-bf16 (3.2GB) + vibevoice-7b-exl3-4bit (4.4 GB). In exl3 quants there is no diffusion, and in no-llm there is no LLM.
+- If you have noise in the audio output, reduce the value of negative_llm_steps_to_cache to 1-2 or even to 0 (as in the original, but it will be slower). The longer the chunk, the more likely there will be noise. 
+- Use split_by_newline:True to split the text into paragraphs. I do not recommend splitting into sentences, as the intonations will vary in each sentence.
+
+
+
+
+
+
+
+## OLD Readme (left for )
 
 ### Core Functionality
 - 🎤 **Single Speaker TTS**: Generate natural speech with optional voice cloning
@@ -29,23 +102,6 @@ A comprehensive ComfyUI integration for Microsoft's VibeVoice text-to-speech mod
   <strong>Click to watch the demo video</strong>
 </p>
 
-## Installation
-
-### Automatic Installation (Recommended)
-1. Clone this repository into your ComfyUI custom nodes folder:
-```bash
-cd ComfyUI/custom_nodes
-git clone https://github.com/Enemyx-net/VibeVoice-ComfyUI
-```
-
-2. Restart ComfyUI - the nodes will automatically install VibeVoice on first use
-
-### Manual Installation
-If automatic installation fails:
-```bash
-cd ComfyUI
-python_embeded/python.exe -m pip install git+https://github.com/microsoft/VibeVoice.git
-```
 
 ## Available Nodes
 
@@ -236,13 +292,6 @@ use_sampling: False
 [1]: Let's begin with the agenda.
 ```
 
-## Performance Benchmarks
-
-| Model | VRAM Usage | Context Length | Max Audio Duration |
-|-------|------------|----------------|-------------------|
-| VibeVoice-1.5B | ~8GB | 64K tokens | ~90 minutes |
-| VibeVoice-7B | ~16GB | 32K tokens | ~45 minutes |
-
 ## Known Limitations
 
 - Maximum 4 speakers in multi-speaker mode
@@ -283,36 +332,3 @@ Contributions welcome! Please:
 2. Follow existing code style
 3. Update documentation as needed
 4. Submit pull requests with clear descriptions
-
-## Changelog
-
-### Version 1.0.3
-- Added `attention_type` parameter to both Single Speaker and Multi Speaker nodes for performance optimization
-  - auto (default): Automatic selection of best implementation
-  - eager: Standard implementation without optimizations
-  - sdpa: PyTorch's optimized Scaled Dot Product Attention
-  - flash_attention_2: Flash Attention 2 for maximum performance (requires compatible GPU)
-- Added `diffusion_steps` parameter to control generation quality vs speed trade-off
-  - Default: 20 (VibeVoice default)
-  - Higher values: Better quality, longer generation time
-  - Lower values: Faster generation, potentially lower quality
-
-### Version 1.0.2
-- Added `free_memory_after_generate` toggle to both Single Speaker and Multi Speaker nodes
-- New dedicated "Free Memory Node" for manual memory management in workflows
-- Improved VRAM/RAM usage optimization
-- Enhanced stability for long generation sessions
-- Users can now choose between automatic or manual memory management
-
-### Version 1.0.1
-- Fixed issue with line breaks in speaker text (both single and multi-speaker nodes)
-- Line breaks within individual speaker text are now automatically removed before generation
-- Improved text formatting handling for all generation modes
-
-### Version 1.0.0
-- Initial release
-- Single speaker node with voice cloning
-- Multi-speaker node with automatic speaker detection
-- Text file loading from ComfyUI directories
-- Deterministic and sampling generation modes
-- Support for VibeVoice 1.5B and 7B models
