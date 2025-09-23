@@ -43,7 +43,7 @@ here https://huggingface.co/lldacing/flash-attention-windows-wheel/tree/main
 Below, I'm using python 3.11, torch 2.6.0, and cuda126. For other versions, please refer to the links above (or compile yourself). For flash-attention, it's important to match the version of python, torch, and cuda. For exllama, the main requirement is that the version of python matches.
 
 exllamav3-v0.0.6
-then install exllamav3 v0.0.6 drom here (choses one based on your python version) https://github.com/turboderp-org/exllamav3/releases/tag/v0.0.6
+then install exllamav3 v0.0.6 drom here (choses one based on your python version) https://github.com/mozer/exllamav3/releases/tag/v0.0.6
 
 ```
 cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_embeded
@@ -338,6 +338,7 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
+
 
 
 
