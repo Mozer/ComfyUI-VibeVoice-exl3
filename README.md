@@ -50,9 +50,10 @@ then install exllamav3 v0.0.6 drom here https://github.com/turboderp-org/exllama
 cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_embeded
 python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4%2Bcu126torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
 python.exe -m pip install https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl --no-deps
-with --no-deps it will use installed flash-attn-2.7.4 (instead of 2.7.4.post1)
-after that, install my fork without compiling:
+# with --no-deps it will use installed flash-attn-2.7.4 (instead of 2.7.4.post1)
+# after that, install my fork without compiling:
 set EXLLAMA_NOCOMPILE=1 && python.exe -m pip install git+https://github.com/mozer/exllamav3.git
+# fix numpy to older one:
 python.exe -m pip install numpy==2.0.2
 ```
 
@@ -338,5 +339,6 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
+
 
 
