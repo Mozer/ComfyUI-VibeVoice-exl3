@@ -1,0 +1,236 @@
+{
+  "id": "c6ef8963-032c-45f6-954f-b5f6b354343b",
+  "revision": 0,
+  "last_node_id": 67,
+  "last_link_id": 103,
+  "nodes": [
+    {
+      "id": 61,
+      "type": "Note",
+      "pos": [
+        832.5051879882812,
+        376.4481201171875
+      ],
+      "size": [
+        210,
+        184.3014373779297
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "for speed",
+      "properties": {},
+      "widgets_values": [
+        "7b-no-llm-bf16\nbf16\n7b-exl3-4bit\nsage\nFree_mem: false\n6 steps\ncfg 1.40\nsampling: false\nsteps_to_cache: 2\nstreaming: True\nstreaming_buffer: 1\nincrease_cfg: true\nsplit: True"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 67,
+      "type": "Note",
+      "pos": [
+        832.664794921875,
+        597.1406860351562
+      ],
+      "size": [
+        210,
+        197.05030822753906
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "for quality",
+      "properties": {},
+      "widgets_values": [
+        "7b-no-llm-bf16\nbf16\n7b-exl3-8bit\nsage\nFree_mem: false\n16 steps\ncfg 1.30\nsampling: false\nsteps_to_cache: 0\nstreaming: True\nstreaming_buffer: 10\nincrease_cfg: false\nsplit: false"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 22,
+      "type": "Note",
+      "pos": [
+        130.11038208007812,
+        600.4522094726562
+      ],
+      "size": [
+        293.8641052246094,
+        96.81277465820312
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "models are auto-downloaded to /models/vibevoice/\n\nmodels collection:\nhttps://huggingface.co/collections/tensorbanana/vibevoice-68cd1bac5766dc65e90380c1"
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 66,
+      "type": "SaveAudioMP3",
+      "pos": [
+        838.0811157226562,
+        167.5269317626953
+      ],
+      "size": [
+        288.7283020019531,
+        136
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": 98
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveAudioMP3"
+      },
+      "widgets_values": [
+        "audio/ComfyUI",
+        "V0"
+      ]
+    },
+    {
+      "id": 63,
+      "type": "VibeVoiceSingleSpeakerNodeExl3",
+      "pos": [
+        463.85003662109375,
+        169.1021270751953
+      ],
+      "size": [
+        324.5692138671875,
+        539.9939575195312
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "voice_to_clone",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": 91
+        }
+      ],
+      "outputs": [
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": [
+            98
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VibeVoiceSingleSpeakerNodeExl3"
+      },
+      "widgets_values": [
+        "Приветик всем котяткам в этом чатике! хаха ",
+        "VibeVoice-7B-no-llm-bf16",
+        "bf16",
+        "vibevoice-7b-exl3-4bit",
+        "sage",
+        true,
+        5,
+        64,
+        "fixed",
+        1.4,
+        false,
+        0.95,
+        0.95,
+        true,
+        2,
+        2,
+        true,
+        true
+      ]
+    },
+    {
+      "id": 39,
+      "type": "LoadAudio",
+      "pos": [
+        186.1218719482422,
+        185.24200439453125
+      ],
+      "size": [
+        214.080078125,
+        136
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            91
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadAudio",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.49"
+      },
+      "widgets_values": [
+        "emma.wav",
+        null,
+        null
+      ],
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    }
+  ],
+  "links": [
+    [
+      91,
+      39,
+      0,
+      63,
+      0,
+      "AUDIO"
+    ],
+    [
+      98,
+      63,
+      0,
+      66,
+      0,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9412602783646734,
+      "offset": [
+        235.14313618944038,
+        -19.86228781874715
+      ]
+    },
+    "frontendVersion": "1.25.9",
+    "VHS_latentpreview": true,
+    "VHS_latentpreviewrate": 3,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}
