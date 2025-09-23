@@ -2,8 +2,9 @@
 name = "VibeVoice-ComfyUI"
 version = "1.0.3"
 description = "ComfyUI wrapper for Microsoft VibeVoice TTS model. Supports single speaker, multi-speaker, and text file loading"
-authors = [{name = "Fabio Sarracino"}]
+authors = [{name = "Fabio Sarracino", "Mozer"}]
 
 [project.urls]
-Repository = "https://github.com/Enemyx-net/VibeVoice-ComfyUI"
-Issues = "https://github.com/Enemyx-net/VibeVoice-ComfyUI/issues"
+Repository = "https://github.com/Mozer/ComfyUI-VibeVoice-exl3"
+
+Issues = "https://github.com/Mozer/ComfyUI-VibeVoice-exl3/issues"
