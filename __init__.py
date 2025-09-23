@@ -1,5 +1,5 @@
 # Created by Fabio Sarracino
-__version__ = "1.0.3"
+__version__ = "1.3.0"
 __author__ = "Fabio Sarracino"
 __title__ = "VibeVoice ComfyUI"
 
@@ -44,48 +44,35 @@ def apply_timm_compatibility_patches():
     except Exception as e:
         return False
 
-def check_vibevoice_available():
-    """Check if VibeVoice is available for import"""
-    try:
-        # Apply timm patches first
-        apply_timm_compatibility_patches()
-        
-        import vibevoice
-        return True
-    except ImportError:
+def check_embedded_vibevoice():
+    """Check if embedded VibeVoice is available"""
+    vvembed_path = os.path.join(os.path.dirname(__file__), 'vvembed')
+    if not os.path.exists(vvembed_path):
+        logger.error(f"Embedded VibeVoice not found at {vvembed_path}")
         return False
+    
+    # Add vvembed to path if not already there
+    if vvembed_path not in sys.path:
+        sys.path.insert(0, vvembed_path)
+    
+    logger.info("Using embedded VibeVoice (MIT licensed)")
+    return True
 
-def install_vibevoice():
-    """Install VibeVoice if not already installed"""
-    if check_vibevoice_available():
-        return True
-        
+def ensure_dependencies():
+    """Ensure required dependencies are installed"""
     try:
-        # Install VibeVoice with specific transformers version to avoid LossKwargs issue
-        logger.info("Installing VibeVoice with compatible dependencies...")
-        
-        # First install compatible transformers version
-        transformers_cmd = [sys.executable, "-m", "pip", "install", "transformers>=4.44.0"]
-        result = subprocess.run(transformers_cmd, capture_output=True, text=True, timeout=300)
-        
-        if result.returncode != 0:
-            logger.warning(f"Transformers install warning: {result.stderr}")
-        
-        # Then install VibeVoice (int's embedded now, not needed)
-        #cmd = [sys.executable, "-m", "pip", "install", "git+https://github.com/microsoft/VibeVoice.git"]
-        
-        #result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        
-        if result.returncode == 0:
-            logger.info("VibeVoice installation completed")
-            return check_vibevoice_available()  # Verify installation
-        else:
-            logger.error(f"Installation failed: {result.stderr}")
-            return False
-            
-    except Exception as e:
-        logger.error(f"Installation error: {e}")
+        import transformers
+        from packaging import version
+        if version.parse(transformers.__version__) < version.parse("4.44.0"):
+            logger.warning("Transformers version < 4.44.0, some features may not work correctly")
+    except ImportError:
+        logger.warning("Transformers not installed. Please install: pip install transformers>=4.44.0")
         return False
+    
+    # Apply timm patches if needed
+    apply_timm_compatibility_patches()
+    
+    return True
 
 # Initialize node mappings
 NODE_CLASS_MAPPINGS = {}
@@ -99,8 +86,8 @@ try:
 except Exception as e:
     logger.error(f"Failed to register LoadTextFromFile node: {e}")
 
-# Register VibeVoice nodes (requires VibeVoice installation)
-if install_vibevoice():
+# Register VibeVoice nodes (using embedded VibeVoice)
+if check_embedded_vibevoice() and ensure_dependencies():
     try:
         from .nodes.single_speaker_node import VibeVoiceSingleSpeakerNode
         from .nodes.multi_speaker_node import VibeVoiceMultipleSpeakersNode
@@ -118,10 +105,12 @@ if install_vibevoice():
         NODE_CLASS_MAPPINGS["VibeVoiceFreeMemoryNodeExl3"] = VibeVoiceFreeMemoryNode
         NODE_DISPLAY_NAME_MAPPINGS["VibeVoiceFreeMemoryNodeExl3"] = "VibeVoice Free Memory Exl3"
         
+        logger.info("VibeVoice nodes registered successfully")
+        
     except Exception as e:
         logger.error(f"Failed to register VibeVoice nodes: {e}")
-        logger.info("VibeVoice may need a ComfyUI restart to complete installation")
+        logger.info("Please ensure transformers>=4.44.0 is installed")
 else:
-    logger.warning("VibeVoice nodes unavailable - installation failed")
+    logger.warning("VibeVoice nodes unavailable - check embedded module and dependencies")
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', '__version__']
