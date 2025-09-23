@@ -47,7 +47,7 @@ cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_em
 `python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4%2Bcu126torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl`
 
 exllamav3-v0.0.6
-then install exllamav3 v0.0.6 drom here https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6
+then install exllamav3 v0.0.6 drom here https://github.com/turboderp-org/exllamav3/releases/tag/v0.0.6
 I used this one:
 `python.exe -m pip install https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl`
 and after it fails run this: 
@@ -336,3 +336,4 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
+
