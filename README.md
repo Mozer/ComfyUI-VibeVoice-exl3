@@ -53,7 +53,8 @@ python.exe -m pip install https://github.com/turboderp-org/exllamav3/releases/do
 # with --no-deps it will use installed flash-attn-2.7.4 (instead of 2.7.4.post1)
 # after that, install my fork without compiling:
 set EXLLAMA_NOCOMPILE=1 && python.exe -m pip install git+https://github.com/mozer/exllamav3.git
-# fix numpy to older one:
+python.exe -m pip install -U "triton-windows<3.5
+# downgrade numpy:
 python.exe -m pip install numpy==2.0.2
 ```
 
@@ -339,6 +340,7 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
+
 
 
 
