@@ -32,18 +32,18 @@ Original vibevoice-7b works like this: 2 LLM passes (positive+negative) + diffus
 
 ## Installation
 - Windows: install precompiled flash-attention-2 and exllamav3 then install these comfy nodes
-- Linux: install as comfyUI nodes
+- Linux: just install as comfyUI nodes
 
 flash-attention-2
 It's difficult to compile under Windows, so here are the links for the compiled whl for flash-attention-2:
 here https://huggingface.co/lldacing/flash-attention-windows-wheel/tree/main
 
- You can find out your version of Python, Torch, cuda in comfyui - menu - Help - about
+You can find out your version of Python, Torch, cuda in comfyui - menu - Help - about
 
-Below, I'm using python 3.11, torch 2.6.0, and cuda126. For other versions, please refer to the links above (or compile yourself). For flash-attention, it's important to match the version of python, torch, and cuda. For exllama, the main requirement is that the version of python matches.
+Below, I'm using python 3.11, torch 2.6.0, and cuda126. For other versions, please refer to the links above (or compile yourself). For flash-attention, it's important to match the version of python, torch, and cuda. For exllama, the main requirement is that the version of python matches. If you can't find any suitable compiled versions of flash-attention, you can compile them yourself using the following guide: https://www.reddit.com/r/Oobabooga/comments/1jq3uj9/guide_getting_flash_attention_2_working_on/
 
 exllamav3-v0.0.6
-then install exllamav3 v0.0.6 drom here (choses one based on your python version) https://github.com/mozer/exllamav3/releases/tag/v0.0.6
+then install exllamav3 v0.0.6 drom here (choose one based on your python version) https://github.com/mozer/exllamav3/releases/tag/v0.0.6
 
 ```
 cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_embeded
@@ -56,12 +56,9 @@ python.exe -m pip install https://github.com/Mozer/exllamav3/releases/download/v
 python.exe -m pip install -U "triton-windows<3.5
 ```
 
-If you can't find any suitable compiled versions, you can compile them yourself using the following guide: https://www.reddit.com/r/Oobabooga/comments/1jq3uj9/guide_getting_flash_attention_2_working_on/
- I couldn't compile exllamav3 on my 3090 because it complained that the architecture was old (?!), so I gave up and installed it using the whl link.
 
-An interesting fact: only the cuda code of exllama is compiled, and I haven't modified it, so the whl file is compatible with the original exllamav3-v0.0.6. The code in the node uses my modified python code repository.
 
- After that, install my nodes using the comfyui manager - install via git url:
+After that, install my nodes using the comfyui manager - install via git url:
 https://github.com/mozer/comfyUI-vibevoice-exl3
 Or via: `cd ComfyUI/custom_nodes && git clone https://github.com/mozer/comfyUI-vibevoice-exl3`
 Restart comfyui.
@@ -338,6 +335,7 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
+
 
 
 
