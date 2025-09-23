@@ -1,10 +1,17 @@
 [project]
-name = "VibeVoice-ComfyUI"
-version = "1.0.3"
-description = "ComfyUI wrapper for Microsoft VibeVoice TTS model. Supports single speaker, multi-speaker, and text file loading"
-authors = [{name = "Fabio Sarracino", "Mozer"}]
+name = "ComfyUI-VibeVoice-exl3"
+version = "1.0.0"
+description = "ComfyUI wrapper for Microsoft VibeVoice TTS model with exllamav3 engine. Supports single speaker, multi-speaker, and text file loading"
+license = {file = "LICENSE"} 
+authors = [{name = "Fabio Sarracino, Mozer"}]
+dependencies = ["accelerate==1.6.0", "torch>=2.0.0", "torchaudio>=2.0.0", "numpy>=1.20.0", "transformers>=4.51.3", "librosa>=0.9.0", "soundfile>=0.12.0", "av>=14.3.0", "peft>=0.17.0", "huggingface_hub>=0.25.1", "diffusers", "tqdm", "scipy", "ml-collections", "absl-py", "aiortc", "bitsandbytes", "pyaudio", "git+https://github.com/mozer/exllamav3.git"]
 
 [project.urls]
-Repository = "https://github.com/Mozer/ComfyUI-VibeVoice-exl3"
+Repository = "https://github.com/mozer/ComfyUI-VibeVoice-exl3"
+"Bug Tracker" = "https://github.com/mozer/ComfyUI-VibeVoice-exl3/issues"
 
-Issues = "https://github.com/Mozer/ComfyUI-VibeVoice-exl3/issues"
+[tool.comfy]
+PublisherId = "mozer"
+DisplayName = "ComfyUI-VibeVoice-exl3"
+Icon = ""
+includes = []
