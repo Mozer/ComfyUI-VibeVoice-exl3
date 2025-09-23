@@ -37,25 +37,23 @@ Original vibevoice-7b works like this: 2 LLM passes (positive+negative) + diffus
 flash-attention-2
 It's difficult to compile under Windows, so here are the links for the compiled whl for flash-attention-2:
 here https://huggingface.co/lldacing/flash-attention-windows-wheel/tree/main
-or here https://github.com/NeedsMoar/flash-attention-2-builds/releases
 
  You can find out your version of Python, Torch, cuda in comfyui - menu - Help - about
 
 Below, I'm using python 3.11, torch 2.6.0, and cuda126. For other versions, please refer to the links above (or compile yourself). For flash-attention, it's important to match the version of python, torch, and cuda. For exllama, the main requirement is that the version of python matches.
 
 exllamav3-v0.0.6
-then install exllamav3 v0.0.6 drom here https://github.com/turboderp-org/exllamav3/releases/tag/v0.0.6
+then install exllamav3 v0.0.6 drom here (choses one based on your python version) https://github.com/turboderp-org/exllamav3/releases/tag/v0.0.6
 
 ```
 cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_embeded
 python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4%2Bcu126torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
-python.exe -m pip install https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl --no-deps
-# with --no-deps it will use installed flash-attn-2.7.4 (instead of 2.7.4.post1)
-# after that, install my fork without compiling:
-set EXLLAMA_NOCOMPILE=1 && python.exe -m pip install git+https://github.com/mozer/exllamav3.git
+# uninstall existing exllamav3, if you have one
+python.exe -m pip uninstall exllamav3
+
+# install my exllamav3 for Python 3.11.x (choose correct whl here from my repo, link above)
+python.exe -m pip install https://github.com/Mozer/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl```
 python.exe -m pip install -U "triton-windows<3.5
-# downgrade numpy:
-python.exe -m pip install numpy==2.0.2
 ```
 
 If you can't find any suitable compiled versions, you can compile them yourself using the following guide: https://www.reddit.com/r/Oobabooga/comments/1jq3uj9/guide_getting_flash_attention_2_working_on/
@@ -340,6 +338,7 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
+
 
 
 
