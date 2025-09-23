@@ -44,12 +44,15 @@ or here https://github.com/NeedsMoar/flash-attention-2-builds/releases
 Below, I'm using python 3.11, torch 2.6.0, and cuda126. For other versions, please refer to the links above (or compile yourself). For flash-attention, it's important to match the version of python, torch, and cuda. For exllama, the main requirement is that the version of python matches.
 
 cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_embeded
-python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4%2Bcu126torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
+`python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4%2Bcu126torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl`
 
 exllamav3-v0.0.6
 then install exllamav3 v0.0.6 drom here https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6
 I used this one:
-python.exe -m pip install https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl
+`python.exe -m pip install https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl`
+and after it fails run this: 
+`python.exe -m pip install https://github.com/turboderp-org/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl --no-deps`
+with --no-deps it will use installed flash-attn-2.7.4 (instead of 2.7.4.post1)
 
 If you can't find any suitable compiled versions, you can compile them yourself using the following guide: https://www.reddit.com/r/Oobabooga/comments/1jq3uj9/guide_getting_flash_attention_2_working_on/
  I couldn't compile exllamav3 on my 3090 because it complained that the architecture was old (?!), so I gave up and installed it using the whl link.
@@ -331,4 +334,5 @@ Contributions welcome! Please:
 1. Test changes thoroughly
 2. Follow existing code style
 3. Update documentation as needed
+
 4. Submit pull requests with clear descriptions
