@@ -42,8 +42,7 @@ You can find out your version of Python, Torch, cuda in comfyui - menu - Help - 
 
 Below, I'm using python 3.11, torch 2.6.0, and cuda126. For other versions, please refer to the links above (or compile yourself). For flash-attention, it's important to match the version of python, torch, and cuda. For exllama, the main requirement is that the version of python matches. If you can't find any suitable compiled versions of flash-attention, you can compile them yourself using the following guide: https://www.reddit.com/r/Oobabooga/comments/1jq3uj9/guide_getting_flash_attention_2_working_on/
 
-exllamav3-v0.0.6
-then install exllamav3 v0.0.6 drom here (choose one based on your python version) https://github.com/mozer/exllamav3/releases/tag/v0.0.6
+exllamav3-v0.0.6 - choose whl based on your python version: https://github.com/mozer/exllamav3/releases/tag/v0.0.6
 
 ```
 cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_embeded
@@ -53,7 +52,7 @@ python.exe -m pip uninstall exllamav3
 
 # install my exllamav3 for Python 3.11.x (choose correct whl here from my repo, link above)
 python.exe -m pip install https://github.com/Mozer/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl```
-python.exe -m pip install -U "triton-windows<3.5
+python.exe -m pip install -U triton-windows<3.5
 ```
 
 
@@ -337,6 +336,7 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
+
 
 
 
