@@ -36,7 +36,9 @@ Original vibevoice-7b works like this: 2 LLM passes (positive+negative) + diffus
 
 flash-attention-2
 It's difficult to compile under Windows, so here are the links for the compiled whl for flash-attention-2:
-here https://huggingface.co/lldacing/flash-attention-windows-wheel/tree/main
+
+here: https://huggingface.co/lldacing/flash-attention-windows-wheel/tree/main
+or here: https://github.com/mjun0812/flash-attention-prebuild-wheels/releases
 
 You can find out your version of Python, Torch, cuda in comfyui - menu - Help - about
 
@@ -334,6 +336,7 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
+
 
 
 
