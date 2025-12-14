@@ -36,7 +36,9 @@ Original vibevoice-7b works like this: 2 LLM passes (positive+negative) + diffus
 
 flash-attention-2
 It's difficult to compile under Windows, so here are the links for the compiled whl for flash-attention-2:
-here https://huggingface.co/lldacing/flash-attention-windows-wheel/tree/main
+
+here: https://huggingface.co/lldacing/flash-attention-windows-wheel/tree/main
+or here: https://github.com/mjun0812/flash-attention-prebuild-wheels/releases
 
 You can find out your version of Python, Torch, cuda in comfyui - menu - Help - about
 
@@ -47,11 +49,9 @@ exllamav3-v0.0.6 - choose whl based on your python version: https://github.com/m
 ```
 cd C:\DATA\SD\ComfyUI_windows_portable_nvidia\ComfyUI_windows_portable\python_embeded
 python.exe -m pip install https://huggingface.co/lldacing/flash-attention-windows-wheel/resolve/main/flash_attn-2.7.4%2Bcu126torch2.6.0cxx11abiFALSE-cp311-cp311-win_amd64.whl
-# uninstall existing exllamav3, if you have one
-python.exe -m pip uninstall exllamav3
 
 # install my exllamav3 for Python 3.11.x (choose correct whl here from my repo, link above)
-python.exe -m pip install https://github.com/Mozer/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl```
+python.exe -m pip install https://github.com/Mozer/exllamav3/releases/download/v0.0.6/exllamav3-0.0.6+cu128.torch2.7.0-cp311-cp311-win_amd64.whl
 python.exe -m pip install -U triton-windows<3.5
 ```
 
@@ -336,12 +336,3 @@ Contributions welcome! Please:
 3. Update documentation as needed
 
 4. Submit pull requests with clear descriptions
-
-
-
-
-
-
-
-
-
