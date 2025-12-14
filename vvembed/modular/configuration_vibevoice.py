@@ -144,6 +144,7 @@ class VibeVoiceDiffusionHeadConfig(PretrainedConfig):
         ddpm_num_inference_steps=20,
         ddpm_beta_schedule="cosine",
         ddpm_batch_mul=4,
+        solver_order=2,
         **kwargs
     ):
         self.hidden_size = hidden_size
@@ -158,6 +159,7 @@ class VibeVoiceDiffusionHeadConfig(PretrainedConfig):
         self.ddpm_num_inference_steps = ddpm_num_inference_steps
         self.ddpm_beta_schedule = ddpm_beta_schedule
         self.ddpm_batch_mul = ddpm_batch_mul
+        self.solver_order = solver_order
         
         super().__init__(**kwargs)
 

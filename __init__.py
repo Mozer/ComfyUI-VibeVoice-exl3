@@ -78,20 +78,21 @@ def ensure_dependencies():
 NODE_CLASS_MAPPINGS = {}
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
-# Register text loading node (always available)
-try:
-    from .nodes.load_text_node import LoadTextFromFileNode
-    NODE_CLASS_MAPPINGS["LoadTextFromFileNode"] = LoadTextFromFileNode
-    NODE_DISPLAY_NAME_MAPPINGS["LoadTextFromFileNode"] = "VibeVoice Load Text From File"
-except Exception as e:
-    logger.error(f"Failed to register LoadTextFromFile node: {e}")
 
 # Register VibeVoice nodes (using embedded VibeVoice)
 if check_embedded_vibevoice() and ensure_dependencies():
     try:
+        from .nodes.load_text_node import LoadTextFromFileNode
+        from .nodes.replace_multiple_node import ReplaceStringMultipleNode
         from .nodes.single_speaker_node import VibeVoiceSingleSpeakerNode
         from .nodes.multi_speaker_node import VibeVoiceMultipleSpeakersNode
-        from .nodes.free_memory_node import VibeVoiceFreeMemoryNode
+        from .nodes.free_memory_node import VibeVoiceFreeMemoryNode   
+        
+        NODE_CLASS_MAPPINGS["LoadTextFromFileNode"] = LoadTextFromFileNode
+        NODE_DISPLAY_NAME_MAPPINGS["LoadTextFromFileNode"] = "VibeVoice Load Text From File"
+        
+        NODE_CLASS_MAPPINGS["ReplaceStringMultipleNode"] = ReplaceStringMultipleNode
+        NODE_DISPLAY_NAME_MAPPINGS["ReplaceStringMultipleNode"] = "Replace String Multiple using json"             
         
         # Single speaker node
         NODE_CLASS_MAPPINGS["VibeVoiceSingleSpeakerNodeExl3"] = VibeVoiceSingleSpeakerNode

@@ -10,6 +10,8 @@ import time
 from typing import List, Optional
 
 from .base_vibevoice import BaseVibeVoiceNode, BufferedPyAudioStreamer
+from .replace_multiple_node import ReplaceStringMultipleNode
+from modular.wav2lip_streamer import Wav2LipStreamer
 
 # Setup logging
 logger = logging.getLogger("VibeVoice")
@@ -52,7 +54,7 @@ class VibeVoiceSingleSpeakerNode(BaseVibeVoiceNode):
                     "tooltip": "Attention implementation. Auto selects the best available, eager is standard, sdpa is optimized PyTorch, flash_attention_2 requires compatible GPU"
                 }),
                 "free_memory_after_generate": ("BOOLEAN", {"default": True, "tooltip": "Free model from memory after generation to save VRAM/RAM. Disable to keep model loaded for faster subsequent generations"}),
-                "diffusion_steps": ("INT", {"default": 15, "min": 3, "max": 50, "step": 1, "tooltip": "Number of denoising steps. More steps = better quality but slower. Default: 20"}),
+                "diffusion_steps": ("INT", {"default": 15, "min": 2, "max": 50, "step": 1, "tooltip": "Number of denoising steps. More steps = better quality but slower. Default: 20"}),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 2**32-1, "tooltip": "Random seed for generation. Default 42 is used in official examples"}),
                 "cfg_scale": ("FLOAT", {"default": 1.4, "min": 1.0, "max": 3.0, "step": 0.05, "tooltip": "Classifier-free guidance scale (official default: 1.3)"}),
                 "use_sampling": ("BOOLEAN", {"default": False, "tooltip": "Enable sampling mode. When False (default), uses deterministic generation like official examples"}),
@@ -61,11 +63,22 @@ class VibeVoiceSingleSpeakerNode(BaseVibeVoiceNode):
                 "voice_to_clone": ("AUDIO", {"tooltip": "Optional: Reference voice to clone. If not provided, synthetic voice will be used."}),
                 "temperature": ("FLOAT", {"default": 0.95, "min": 0.1, "max": 2.0, "step": 0.05, "tooltip": "Only used when sampling is enabled"}),
                 "top_p": ("FLOAT", {"default": 0.95, "min": 0.1, "max": 1.0, "step": 0.05, "tooltip": "Only used when sampling is enabled"}),
-                "streaming": ("BOOLEAN", {"default": False, "tooltip": "Enable streaming mode, playback directly to your default audio device"}),
+                "streaming_to_audio": ("BOOLEAN", {"default": False, "tooltip": "Enable audio streaming mode, playback directly to your default audio device"}),
+                "streaming_to_wav2lip": ("BOOLEAN", {"default": False, "tooltip": "NOT wokring yet. Don't use. Enable streaming to wav2lip video, playback directly to your default audio/video device"}),
                 "streaming_buffer": ("INT", {"default": 5, "min": 1, "max": 100, "step": 1, "tooltip": "Seconds to buffer before playing when streaming. Default: 5"}),
-                "negative_llm_steps_to_cache": ("INT", {"default": 4, "min": 0, "max": 100, "tooltip": "Cache n steps of negative conditioning for speed-up. 0 - cache turned off for best quality; 20 - for speed (may cause noise)"}),
+                "negative_llm_steps_to_skip": ("FLOAT", {"default": 0.0, "min": 0, "max": 0.9, "step": 0.1, "tooltip": "Cache and skip % of steps of negative conditioning for speed-up. 0 - cache turned off for best quality; 0.4 - optimal; 0.9 - skip 90% of steps (may cause noise)"}),
+                "semantic_steps_to_skip": ("FLOAT", {"default": 0.0, "min": 0, "max": 1.0, "step": 0.1, "tooltip": "Cache and skip % of steps of semantic encoding for speed-up. 0 - cache turned off for best quality; 1.0 - for speed"}),
                 "increase_cfg": ("BOOLEAN", {"default": False, "tooltip": "Increase CFG +50% for first 50% of diffusion steps (Experimental, for more emotions)"}),
-                "split_by_newline": ("BOOLEAN", {"default": True, "tooltip": "Split long text into chunks by newline"}),
+                "solver_order": (["1", "2", "3"], {
+                    "default": "2",
+                    "tooltip": "DPM solver_order. 2 - original. 1 - little faster, affects quality."
+                }),
+                "split_by": (["none", "newline", "sentence"], {
+                    "default": "newline",
+                    "tooltip": "Split long text into chunks by newline or by each sentence. Original: none"
+                }),
+                "restart_at_garbage": ("BOOLEAN", {"default": True, "tooltip": "Stop generation when garbage audio is detected"}),
+                "use_compile": ("BOOLEAN", {"default": False, "tooltip": "Use torch.compile for a little speed-up. triton is needed. Speed-up is really very little."}),
             }
         }
 
@@ -98,18 +111,25 @@ class VibeVoiceSingleSpeakerNode(BaseVibeVoiceNode):
                     diffusion_steps: int = 20, seed: int = 42, cfg_scale: float = 1.3,
                     use_sampling: bool = False, voice_to_clone=None,
                     temperature: float = 0.95, top_p: float = 0.95, quantization_mode = "bf16", 
-                    streaming = False, streaming_buffer = 10, exllama_model = "None", 
-                    negative_llm_steps_to_cache: int = 0, increase_cfg: bool=False, 
-                    split_by_newline: bool=False):
+                    streaming_to_audio = False, streaming_to_wav2lip = False, streaming_buffer = 10, exllama_model = "None", 
+                    negative_llm_steps_to_skip: float = 0.0,
+                    semantic_steps_to_skip: int = 0,
+                    increase_cfg: bool=False, 
+                    solver_order: int = 2,
+                    split_by: str="newline", 
+                    restart_at_garbage: bool=False, 
+                    use_compile: bool=False):
         """Generate speech from text using VibeVoice"""
         
         audio_dict = None
+        streaming_to_wav2lip = False
         
         try:
             if not text or not text.strip():
                 raise Exception("No text provided. Please enter text or connect from LoadTextFromFile node.")
             
             final_text = text
+            
             model_mapping = self._get_model_mapping()
             model_path = model_mapping.get(model, model)
             self.load_model(model_path, attention_type, quantization_mode, exllama_model)
@@ -118,56 +138,88 @@ class VibeVoiceSingleSpeakerNode(BaseVibeVoiceNode):
             sample_rate = 24000
             
             text_chunks = [final_text.strip()]
-            if split_by_newline:
+            if split_by == "newline":
                 chunks = [chunk.strip() for chunk in final_text.split('\n') if chunk.strip()]
+                if chunks:
+                    text_chunks = chunks
+            elif split_by == "sentence": 
+                chunks = self.split_by_sentence_enhanced(final_text)
                 if chunks:
                     text_chunks = chunks
             
             voice_samples = self._prepare_voice_samples(speakers, voice_to_clone)
-            max_new_tokens = 32637
+            max_new_tokens = 32637           
             
-            if streaming and split_by_newline:
-                audio_streamer = BufferedPyAudioStreamer(sample_rate=sample_rate, buffer_duration=streaming_buffer)
+            if streaming_to_wav2lip:
+                wav2lip_streamer = Wav2LipStreamer(
+                    save_path="c:/DATA/LLM/SillyTavern-extras/tts_out/",
+                    char_name="your_character_name"
+                )
+                wav2lip_streamer.reset_reply_part()
+            else:
+                wav2lip_streamer = None
+                
+            if streaming_to_audio:
+                audio_streamer = BufferedPyAudioStreamer(sample_rate=sample_rate, buffer_duration=streaming_buffer, restart_at_garbage=restart_at_garbage)
                 audio_streamer.start_playback()
-
+            else:
+                audio_streamer = None
+                    
+            if streaming_to_audio or streaming_to_wav2lip:
                 for chunk_text in text_chunks:
-                    # --- THIS IS THE FIX ---
                     # Reset the streamer's finished flag before processing the next chunk.
                     # This ensures the new chunk's inference doesn't stop prematurely.
                     if hasattr(audio_streamer, 'finished_flags'):
                         audio_streamer.finished_flags[0] = False
 
+                    print(chunk_text)
                     self._generate_with_vibevoice(
                         self._format_text_for_vibevoice(chunk_text, speakers), 
                         voice_samples, cfg_scale, seed, diffusion_steps, 
-                        use_sampling, temperature, top_p, 
-                        audio_streamer=audio_streamer
+                        use_sampling, temperature, top_p,
+                        negative_llm_steps_to_skip=negative_llm_steps_to_skip, 
+                        semantic_steps_to_skip=semantic_steps_to_skip,
+                        audio_streamer=audio_streamer,
+                        wav2lip_streamer=wav2lip_streamer,
+                        restart_at_garbage=restart_at_garbage,
+                        use_compile=use_compile
                     )
-
-                # ... (no changes to the rest of the function) ...
-                audio_streamer.close()
-                while audio_streamer.playing:
-                    time.sleep(0.1)
-                
-                full_audio_np = audio_streamer.get_full_audio()
-                concatenated_waveform = (
-                    torch.from_numpy(full_audio_np).unsqueeze(0).unsqueeze(0)
-                    if full_audio_np.size > 0
-                    else torch.zeros(1, 1, int(0.5 * sample_rate), dtype=torch.float32)
-                )
-                audio_dict = {"waveform": concatenated_waveform, "sample_rate": sample_rate}
+                        
+                if streaming_to_audio:
+                    audio_streamer.close()
+                    while audio_streamer.playing:
+                        time.sleep(0.1)
+                    
+                    full_audio_np = audio_streamer.get_full_audio()
+                    concatenated_waveform = (
+                        torch.from_numpy(full_audio_np).unsqueeze(0).unsqueeze(0)
+                        if full_audio_np.size > 0
+                        else torch.zeros(1, 1, int(0.5 * sample_rate), dtype=torch.float32)
+                    )
+                    audio_dict = {"waveform": concatenated_waveform, "sample_rate": sample_rate}
+                else:
+                    # Create empty audio dictionary with silent waveform
+                    empty_duration = 0.5  # seconds
+                    empty_samples = int(empty_duration * sample_rate)
+                    empty_waveform = torch.zeros(1, 1, empty_samples, dtype=torch.float32)
+                    audio_dict = {"waveform": empty_waveform, "sample_rate": sample_rate}    
 
             else: 
                 all_audio_segments = []
                 for i, chunk_text in enumerate(text_chunks):
+                    print(chunk_text)
                     chunk_audio_dict = self._generate_with_vibevoice(
                         self._format_text_for_vibevoice(chunk_text, speakers), 
                         voice_samples, cfg_scale, seed, diffusion_steps, 
                         use_sampling, temperature, top_p, 
-                        streaming=streaming, buffer_duration=streaming_buffer,
+                        streaming=streaming_to_audio, 
+                        buffer_duration=streaming_buffer,
                         max_new_tokens=max_new_tokens, 
-                        negative_llm_steps_to_cache=negative_llm_steps_to_cache, 
-                        increase_cfg=increase_cfg
+                        negative_llm_steps_to_skip=negative_llm_steps_to_skip, 
+                        semantic_steps_to_skip=semantic_steps_to_skip,
+                        increase_cfg=increase_cfg,
+                        restart_at_garbage=restart_at_garbage,
+                        use_compile=use_compile
                     )
                     
                     if i == 0:

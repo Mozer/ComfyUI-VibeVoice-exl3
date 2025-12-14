@@ -28,8 +28,6 @@ from .modular_vibevoice_text_tokenizer import VibeVoiceTextTokenizer, VibeVoiceT
 
 from .modeling_vibevoice import VibeVoiceModel, VibeVoicePreTrainedModel
 from .streamer import AudioStreamer, AsyncAudioStreamer
-from .wav2lip_streamer import Wav2LipStreamer
-from .detectors import OscillationDetector, GarbageAudioException
 
 logger = logging.get_logger(__name__)
 
@@ -247,33 +245,18 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         # NEW: Initialize exllama attribute
         self.exllama = None
         
-        self.negative_llm_steps_to_skip = 0
+        self.negative_llm_steps_to_cache = 0
         
         self.negative_outputs_stored = None
-        
-        self.semantic_steps_to_skip = 0
-        
-        self.semantic_features_cached = None
         
         self.increase_cfg = False           
         
         # Initialize weights and apply final processing
-        self.post_init()
+        self.post_init()        
 
-        # Initialize the detector
-        # Threshold 0.005 is chosen based on your logs:
-        # Speech varies by ~0.05+, Beep varies by ~0.0004
-        self.detector = OscillationDetector(window_size=35, stability_threshold=0.004)
-    
     @property
     def noise_scheduler(self):
         return self.model.noise_scheduler
-        
-    # property setter
-    @noise_scheduler.setter
-    def noise_scheduler(self, value):
-        """Set the noise scheduler"""
-        self.model.noise_scheduler = value            
 
     @property
     def prediction_head(self):
@@ -426,7 +409,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                 logits, hidden_states = self.exllama.forward(
                     inputs_embeds=inputs_embeds,
                     position_ids=position_ids,
-                    use_negative_cache=use_negative_cache
+                    use_negative_cache=use_negative_cache  # Add this parameter
                 )                
             else:
                 # not called
@@ -439,7 +422,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             
             return VibeVoiceCausalLMOutputWithPast(
                 logits=logits,
-                past_key_values=past_key_values,  # ExLlama manages its own cache itself
+                past_key_values=past_key_values,  # ExLlama manages its own cache
                 last_hidden_state=hidden_states.to(self.dtype),
                 attentions=None,  # ExLlama doesn't return attentions
             )
@@ -577,9 +560,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         speech_input_mask: Optional[torch.BoolTensor] = None,
         return_speech: bool = True,
         cfg_scale: float = 1.0,        
-        stop_check_fn: Optional[Callable[[], bool]] = None,
-        wav2lip_streamer: Optional[Wav2LipStreamer] = None,
-        restart_at_garbage: bool = False,
+        stop_check_fn: Optional[Callable[[], bool]] = None,        
         **kwargs,
     ) -> Union[torch.LongTensor, VibeVoiceGenerationOutput]:
         """
@@ -599,15 +580,9 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         Returns:
             Generated token sequences and optionally speech outputs
         """
-        
         # Initialize cache and step counter
         if not hasattr(self, 'negative_outputs_stored'):
-            self.negative_outputs_stored = None
-        if not hasattr(self, 'semantic_features_cached'):
-            self.semantic_features_cached = None         
-
-        # 1. Reset detector at the start of every new sentence/inference
-        self.detector.reset()
+            self.negative_outputs_stored = None                  
             
         # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
         tokenizer = kwargs.pop("tokenizer", None)  # Pull this out first, we only use it for stopping criteria
@@ -648,7 +623,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         initial_length = input_ids.shape[-1]
         initial_length_per_sample = model_kwargs['attention_mask'].sum(dim=-1)
 
-        # Define all valid tokens that can be generated
+       # Define all valid tokens that can be generated
         valid_tokens = [
             generation_config.speech_start_id,
             generation_config.speech_end_id, 
@@ -676,10 +651,6 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             progress_bar = tqdm(range(max_steps), desc="Generating", leave=False)
         else:
             progress_bar = range(max_steps)
-            
-        # Flag to indicate if we need to restart
-        restart_needed = False
-        valid_steps_count = 0
         
         inference_time_start = time.time()
         for step in progress_bar:            
@@ -687,12 +658,6 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             if stop_check_fn is not None:
                 stop_check_fn() # This will throw if interrupted, breaking the loop via exception.
             
-            # --- NEW: Check for internal garbage stop signal ---
-            if audio_streamer is not None and hasattr(audio_streamer, 'garbage_detected') and audio_streamer.garbage_detected:
-                if verbose:
-                    print(f"Audio generation stopped by garbage detector at step {step + 1}")
-                break
-
             # Check if audio_streamer has been ended (stopped externally)
             if audio_streamer is not None and hasattr(audio_streamer, 'finished_flags'):
                 if any(audio_streamer.finished_flags):                    
@@ -737,7 +702,6 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             else:
                 past_len = input_ids.shape[-1] - 1
             
-            #print(f"{time.time()} before exllama")
             outputs = self(
                 **model_inputs,
                 **prefill_inputs,
@@ -747,8 +711,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                 output_hidden_states=False,
                 use_exllama=(self.exllama is not None),
                 past_len=past_len
-            )
-            #print(f"{time.time()} after exllama")
+            )            
             
             model_kwargs = self._update_model_kwargs_for_generation(
                 outputs, model_kwargs, is_encoder_decoder=False,
@@ -860,17 +823,15 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                         past_len = 0
                     
                     # negative cache
-                    use_negative_cache = False           
-                    if step > 0 and self.negative_llm_steps_to_skip > 0.0:
-                        if self.should_skip_step(step, self.negative_llm_steps_to_skip):
-                            # Skip this step, use cache if available
-                            if self.negative_outputs_stored is not None:
-                                use_negative_cache = True
-                        else:
-                            # Don't skip this step, recalculate
+                    use_negative_cache = False                    
+                    if step > 0 and self.negative_llm_steps_to_cache > 0:      
+                        if step % self.negative_llm_steps_to_cache == 0:
+                            # recalc each n steps
                             use_negative_cache = False
+                        elif self.negative_outputs_stored is not None:
+                            use_negative_cache = True
                     
-                    # compute and cache it                    
+                    # compute and cache it
                     if use_negative_cache == False:  
                         self.negative_outputs_stored = self(
                             **negative_model_inputs, 
@@ -887,7 +848,6 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                         negative_outputs, negative_model_kwargs, is_encoder_decoder=False,
                     )
                     negative_input_ids = torch.cat([negative_input_ids, next_tokens[:, None]], dim=-1)
-                
                 # correct the non-diffusion indices
                 # we forward all samples' negative outputs even if 
                 #   they are not in diffusion mode to keep the cache consistent
@@ -933,7 +893,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                     negative_condition,
                     cfg_scale=cfg_scale,
                     increase_cfg=self.increase_cfg,
-                ).unsqueeze(1)                
+                ).unsqueeze(1) 
                                 
                 # Decode acoustic latent to audio using acoustic streaming cache
                 scaled_latent = speech_latent / self.model.speech_scaling_factor.to(speech_latent.device) - self.model.speech_bias_factor.to(speech_latent.device)
@@ -943,24 +903,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                     sample_indices=diffusion_indices.to(self.model.acoustic_tokenizer.device),
                     use_cache=True,
                     debug=False
-                )
-               
-                # --- START GARBAGE DETECTION BLOCK ---
-                if (restart_at_garbage):                  
-                    try:
-                        # Pass the chunk (PyTorch Tensor) to the detector
-                        if self.detector.is_noise(audio_chunk):
-                            print(f"!!! Beep/Oscillation Detected. Stopping Inference. !!!")
-                            
-                            # Stop the generator immediately
-                            raise GarbageAudioException("Noise detected")
-                    except GarbageAudioException:
-                        # Logic for what to do when stopped (for now, we just stop)
-                        # In the next step, we will add the "Restart" logic here.
-                        restart_needed = True
-                        break                
-                valid_steps_count = step + 1
-                # --- END DETECTION BLOCK ---
+                )                
                 
                 # Store audio chunks for each sample
                 for i, sample_idx in enumerate(diffusion_indices):
@@ -973,34 +916,15 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                 if audio_streamer is not None:
                     # Stream the audio chunks immediately
                     audio_streamer.put(audio_chunk, diffusion_indices)
-                
-                # Add wav2lip streaming support
-                if wav2lip_streamer is not None:
-                    wav2lip_streamer.put(audio_chunk)
                     
-                # semantic cache
-                use_semantic_cache = False                    
-                if step > 0 and self.semantic_steps_to_skip > 0:
-                    if self.should_skip_step(step, self.semantic_steps_to_skip):
-                        # Skip this step, use cache if available
-                        if self.semantic_features_cached is not None:
-                            use_semantic_cache = True
-                    else:
-                        # Don't skip this step, recalculate
-                        use_semantic_cache = False
-                
-                # semantic compute and cache it  
-                if use_semantic_cache == False:                      
-                    # Encode audio to semantic features using semantic streaming cache                                 
-                    semantic_features_raw = self.model.semantic_tokenizer.encode(
-                        audio_chunk,
-                        cache=semantic_cache, 
-                        sample_indices=diffusion_indices,
-                        use_cache=True
-                    )
-                    self.semantic_features_cached = semantic_features_raw.mean # semantic tokenizer has no VAE.                
-                    # Use the cached features
-                semantic_features = self.semantic_features_cached
+                # Encode audio to semantic features using semantic streaming cache
+                semantic_features = self.model.semantic_tokenizer.encode(
+                    audio_chunk,
+                    cache=semantic_cache,  # Use semantic-specific cache
+                    sample_indices=diffusion_indices,
+                    use_cache=True,
+                    debug=False
+                ).mean # semantic tokenizer has no VAE.
                 
                 # Combine acoustic and semantic features for next input
                 acoustic_embed = self.model.acoustic_connector(speech_latent)
@@ -1017,34 +941,8 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             # Set inputs_embeds for next iteration
             inputs_embeds = next_inputs_embeds
 
-        # --- CLEANUP AND RETURN LOGIC ---
-        
-        if restart_needed:
-            print("Preparing partial audio for restart...")
-            # 1. Determine how far back to cut. 
-            # The detector window size is e.g., 25. The noise started roughly 'window_size' ago.
-            # We aggressively cut back to ensure clean audio.
-            cut_back_amount = self.detector.window_size 
-            
-            # 2. Trim audio_chunks
-            # We iterate over the batch (though usually batch=1 for TTS)
-            for sample_idx in range(len(audio_chunks)):
-                current_chunks = audio_chunks[sample_idx]
-                if len(current_chunks) > cut_back_amount:
-                    # Keep only the clean part
-                    audio_chunks[sample_idx] = current_chunks[:-cut_back_amount]
-                else:
-                    # If the beep happened immediately, we might have 0 valid audio
-                    audio_chunks[sample_idx] = []
-        
         if audio_streamer is not None:
-            # Do NOT close the streamer if we are restarting! 
-            # The outer loop will keep using it.
-            if not restart_needed:
-                audio_streamer.end()
-            
-        if wav2lip_streamer is not None:
-            wav2lip_streamer.flush()    
+            audio_streamer.end()
 
         # Concatenate audio chunks for each sample
         final_audio_outputs = []
@@ -1057,26 +955,18 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                 # If no audio was generated for this sample, append None
                 final_audio_outputs.append(None)
         
-        print(f"Segment inference took: {time.time() - inference_time_start:.2f} s. Tokens: {step}. Speed: {step/(time.time()-inference_time_start):.2f} t/s")
+        print(f"segment inference took: {time.time() - inference_time_start:.2f} s.")
         if use_exllama and self.exllama is not None:
             self.exllama.reset_all()  # Reset everything for a fresh generation
         
-        # --- RETURN ---
-        # We attach the restart flag to the output object or return it
-        output = VibeVoiceGenerationOutput(
+        return VibeVoiceGenerationOutput(
             sequences=input_ids,
             speech_outputs=final_audio_outputs if return_speech else None,
             reach_max_step_sample=reach_max_step_sample,
         )
-        
-        # Monkey-patch the restart flag onto the output object for the caller to check
-        output.restart_needed = restart_needed
-        output.valid_steps_count = valid_steps_count
-        return output
-        
     
     @torch.no_grad()
-    # not used (original)
+    # not used
     def original_sample_speech_tokens(self, condition, neg_condition, cfg_scale=3.0):
         self.model.noise_scheduler.set_timesteps(self.ddpm_inference_steps)
         condition = torch.cat([condition, neg_condition], dim=0).to(self.model.prediction_head.device)
@@ -1089,9 +979,122 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
             eps = torch.cat([half_eps, half_eps], dim=0)
             speech = self.model.noise_scheduler.step(eps, t, speech).prev_sample
-        return speech[: len(speech) // 2]        
+        return speech[: len(speech) // 2]
+        
     
-    # used in release. no caching. has increase_cfg
+    # from deepseek, corrected by gemini. not fast
+    # NOT USED
+    @torch.no_grad()
+    def deepseek_with_gemini_sample_speech_tokens(self, condition, neg_condition, cfg_scale=3.0, cache_every_n_steps=2):
+        """
+        Generates speech tokens with an optimized caching strategy for the unconditional prediction.
+
+        Args:
+            condition: The positive conditioning tensor.
+            neg_condition: The negative conditioning tensor.
+            cfg_scale (float): The scale for classifier-free guidance.
+            cache_every_n_steps (int): How many steps to reuse the unconditional prediction for.
+                                       - 1: No caching (original behavior).
+                                       - 2: Recalculate uncond every 2 steps (saves ~25% of model compute).
+                                       - 4: Recalculate uncond every 4 steps (saves ~37.5% of model compute).
+        """
+        self.model.noise_scheduler.set_timesteps(self.ddpm_inference_steps)
+        device = self.model.prediction_head.device
+        dtype = self.model.prediction_head.dtype
+
+        # Prepare conditioning tensors once
+        pos_condition = condition.to(device=device, dtype=dtype)
+        neg_condition = neg_condition.to(device=device, dtype=dtype)
+
+        # Initialize noise for the batch
+        batch_size = condition.shape[0]
+        speech = torch.randn(batch_size, self.config.acoustic_vae_dim, device=device, dtype=dtype)
+
+        uncond_eps_cached = None
+
+        for i, t in enumerate(self.model.noise_scheduler.timesteps):
+            # Create a batch of timesteps
+            t_batch = t.repeat(batch_size).to(device=device, dtype=dtype)
+
+            # Determine if we need to recalculate the unconditional prediction
+            if i % cache_every_n_steps == 0:
+                # --- FULL PASS ---
+                # Recalculate both predictions by running the model on a combined batch
+                speech_input = torch.cat([speech, speech], dim=0)
+                t_input = t.repeat(speech_input.shape[0]).to(device=device, dtype=dtype)
+                condition_input = torch.cat([pos_condition, neg_condition], dim=0)
+                
+                eps_both = self.model.prediction_head(speech_input, t_input, condition=condition_input)
+                cond_eps, uncond_eps = torch.split(eps_both, batch_size, dim=0)
+
+                # Cache the unconditional prediction
+                uncond_eps_cached = uncond_eps.detach()
+            else:
+                # --- HALF PASS (FASTER) ---
+                # Reuse the cached unconditional prediction and only compute the conditional one
+                cond_eps = self.model.prediction_head(speech, t_batch, condition=pos_condition)
+                uncond_eps = uncond_eps_cached
+
+            # Apply guidance (I've included your dynamic CFG logic)
+            current_cfg = cfg_scale * (1.0 + 0.5 * (i < 5)) # Boost CFG for early steps
+            cfg_eps = uncond_eps + current_cfg * (cond_eps - uncond_eps)
+            
+            # Take a step with the scheduler
+            speech = self.model.noise_scheduler.step(cfg_eps, t, speech).prev_sample
+                
+        return speech
+        
+    # from gemini. a little faster
+    # NOT USED
+    @torch.no_grad()
+    def gemi_sample_speech_tokens(self, condition, neg_condition, cfg_scale=1.3):
+        self.model.noise_scheduler.set_timesteps(self.ddpm_inference_steps)
+        
+        # Determine the actual batch size from the condition tensor
+        batch_size = condition.shape[0]
+        device = self.model.prediction_head.device
+        dtype = self.model.prediction_head.dtype
+        
+        # 1. Combine conditions for a single model pass
+        conditions = torch.cat([condition, neg_condition], dim=0).to(device=device, dtype=dtype)
+        
+        # 2. Start with one batch of random noise (the eventual output)
+        speech = torch.randn(
+            (batch_size, self.config.acoustic_vae_dim),
+            device=device,
+            dtype=dtype  # Use the same dtype as your model
+        )
+
+        # Use 'cuda' if available, otherwise 'cpu'
+        device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        for t in self.model.noise_scheduler.timesteps:
+            # 3. Expand the latents to run both cond and uncond simultaneously
+            latent_model_input = torch.cat([speech] * 2).to(dtype)
+
+            # Some schedulers require scaling the input, check your scheduler's docs
+            # latent_model_input = self.model.noise_scheduler.scale_model_input(latent_model_input, t)
+            
+            # Use Automatic Mixed Precision (torch.amp) for a speed boost
+            # It uses faster FP16/BF16 operations where possible
+            #with torch.amp.autocast(device_type=device_type, dtype=torch.float16):
+            # 4. Predict the velocity for both conditions
+            model_output = self.model.prediction_head(
+                latent_model_input,
+                t.repeat(latent_model_input.shape[0]).to(latent_model_input),
+                condition=conditions
+            )
+
+            # 5. Split predictions and apply CFG
+            cond_pred, uncond_pred = model_output.chunk(2)
+            guided_pred = uncond_pred + cfg_scale * (cond_pred - uncond_pred)
+            
+            # 6. Use the guided prediction to step the original single latent
+            speech = self.model.noise_scheduler.step(guided_pred, t, speech).prev_sample
+            
+        return speech
+    
+    # used
     @torch.no_grad()
     def sample_speech_tokens(self, condition, neg_condition, cfg_scale=1.3, increase_cfg=False):
     
@@ -1118,24 +1121,15 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         # Use 'cuda' if available, otherwise 'cpu'
         device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        # 1. Pre-compute projections ONCE
-        # Note: Access the projection layer directly
-        cond_embeds = self.model.prediction_head.cond_proj(condition)
-        uncond_embeds = self.model.prediction_head.cond_proj(neg_condition)        
-        # Combine for batch processing
-        # Shape: [2 * batch_size, seq_len, hidden_size]
-        combined_cond_embeds = torch.cat([cond_embeds, uncond_embeds], dim=0)
-    
         for i, t in enumerate(self.model.noise_scheduler.timesteps):
             # 3. Expand the latents to run both cond and uncond simultaneously
             latent_model_input = torch.cat([speech] * 2).to(dtype)
 
-            # 4. Predict velocity using PRE-COMPUTED embeddings
+            # 4. Predict the velocity for both conditions
             model_output = self.model.prediction_head(
                 latent_model_input,
                 t.repeat(latent_model_input.shape[0]).to(latent_model_input),
-                condition=None, # Pass None
-                condition_embeds=combined_cond_embeds # Pass cached embeds
+                condition=conditions
             )
 
             # 5. Split predictions and apply CFG with conditional scaling
@@ -1153,48 +1147,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             # 6. Use the guided prediction to step the original single latent
             speech = self.model.noise_scheduler.step(guided_pred, t, speech).prev_sample
             
-        return speech
-        
-        
-     
-    def should_skip_step(self, step, skip_rate):
-        """
-        Determine if we should skip this step based on skip_rate (0.0-0.9)
-        Uses pattern based on last digit of step
-        """
-        if step == 0:
-            return False  # Never skip the first step
-        
-        if skip_rate <= 0.0:
-            return False
-            
-        if skip_rate >= 1.0:
-            return True   
-        
-        # Map skip rate to a digit pattern
-        last_digit = step % 10
-        
-        # Define skip patterns based on last digit
-        # Each pattern corresponds to which steps to skip when encountering a step with that last digit
-        patterns = {
-            0: [],  # Don't skip any when we hit a step ending with 0
-            1: [9],  # Skip step 9, 19, 29, etc.
-            2: [4, 9],  # Skip step 4, 9, 14, 19, etc.
-            3: [3, 6, 9],  # Skip step 3, 6, 9, 13, 16, 19, etc.
-            4: [3, 5, 7, 9],  # Skip step 3, 5, 7, 9, etc.
-            5: [1, 3, 5, 7, 9],  # Skip steps ending in 1, 3, 5, 7, 9
-            6: [1, 3, 5, 7, 8, 9],  # Skip steps ending in 1, 3, 5, 7, 8, 9
-            7: [1, 3, 5, 6, 7, 8, 9],  # Skip steps ending in 1, 3, 5, 6, 7, 8, 9
-            8: [1, 3, 4, 5, 6, 7, 8, 9],  # Skip steps ending in 1, 3, 4, 5, 6, 7, 8, 9
-            9: [1, 2, 3, 4, 5, 6, 7, 8, 9]  # Skip steps ending in 1-9
-        }
-        
-        # Select pattern based on skip rate
-        # Map skip rate (0.0-0.9) to pattern key (0-9)
-        pattern_key = min(int(skip_rate * 10), 9)
-        
-        # Check if current step's last digit should be skipped
-        return last_digit in patterns[pattern_key]    
+        return speech    
     
 
 AutoModelForCausalLM.register(VibeVoiceConfig, VibeVoiceForConditionalGenerationInference)

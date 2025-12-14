@@ -24,7 +24,6 @@ from schedule.dpm_solver import DPMSolverMultistepScheduler
 
 from .configuration_vibevoice import VibeVoiceConfig
 
-
 logger = logging.get_logger(__name__)
 
 if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
@@ -164,9 +163,9 @@ class VibeVoiceModel(VibeVoicePreTrainedModel):
         self.noise_scheduler = DPMSolverMultistepScheduler(
             num_train_timesteps=config.diffusion_head_config.ddpm_num_steps,
             beta_schedule=config.diffusion_head_config.ddpm_beta_schedule,
-            prediction_type=config.diffusion_head_config.prediction_type
-        )        
-    
+            prediction_type=config.diffusion_head_config.prediction_type,
+        )
+        
     def set_external_llm(self, llm_model):
         """Set external LLM model for inference"""
         self.language_model = llm_model

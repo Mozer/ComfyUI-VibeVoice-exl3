@@ -256,6 +256,7 @@ class VibeVoiceDiffusionHead(PreTrainedModel):
         noisy_images,
         timesteps,
         condition,
+        condition_embeds=None,  # New argument
     ):
         """
         Forward pass of the prediction head.
@@ -270,8 +271,14 @@ class VibeVoiceDiffusionHead(PreTrainedModel):
         """
         x = self.noisy_images_proj(noisy_images)
         t = self.t_embedder(timesteps)
-        condition = self.cond_proj(condition)
-        c = condition + t
+        
+        # OPTIMIZATION: Use pre-computed embeds if available
+        if condition_embeds is not None:
+            c = condition_embeds + t
+        else:
+            # Fallback for training or legacy calls
+            condition = self.cond_proj(condition)
+            c = condition + t
         
         for layer in self.layers:
             x = layer(x, c)

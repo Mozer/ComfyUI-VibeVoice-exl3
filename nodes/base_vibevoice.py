@@ -12,6 +12,9 @@ import threading
 import pyaudio
 from queue import Queue
 import time
+from modular.wav2lip_streamer import Wav2LipStreamer
+
+from schedule.dpm_solver import DPMSolverMultistepScheduler
 
 # Setup logging
 logger = logging.getLogger("VibeVoice")
@@ -41,20 +44,139 @@ def get_optimal_device():
         return "mps"
     else:
         return "cpu"
+
+
+def estimate_word_trim_position(text: str, valid_steps: int, steps_per_word: float = 4.0) -> int:
+            """
+            Estimates the word count that corresponds to the number of valid steps.
+            Finds the nearest whitespace to avoid cutting words.
+            """
+            # 1. Estimate words spoken: steps / ratio
+            estimated_words = int(valid_steps / steps_per_word)
+            
+            # 2. Split the text (excluding "Speaker 0: " prefix for now)
+            # The text will be prefixed with 'Speaker 0: ' in the loop, so account for it.
+            prefix_len = len("Speaker 0: ")
+            
+            # Strip the speaker prefix if present (only do this for the original text)
+            if text.startswith("Speaker 0: "):
+                clean_text = text[prefix_len:].strip()
+            else:
+                clean_text = text.strip()
+
+            words = clean_text.split()
+            
+            # 3. Safety check: Don't trim more words than exist
+            trim_word_count = min(estimated_words, len(words))
+            
+            if trim_word_count <= 0:
+                return 0 # Trim nothing
+            
+            # 4. Reconstruct the trimmed part and find its index in the original text
+            trimmed_words = words[:trim_word_count]
+            trimmed_text_part = " ".join(trimmed_words)
+            
+            # Find the index of the character *after* the trimmed part in the clean text.
+            # We add 1 for the space separator, if it exists.
+            trim_char_index_in_clean_text = len(trimmed_text_part)
+            
+            # Look for the next space to ensure we trim a full word.
+            # We search in the clean text starting from the estimated position.
+            next_space = clean_text.find(' ', trim_char_index_in_clean_text)
+            
+            if next_space != -1:
+                # Trim at the space *after* the last spoken word
+                trim_char_index_in_clean_text = next_space
+            else:
+                # If no space found ahead, it means the last word was the final word.
+                # In this case, we trim to the end of the last word.
+                pass 
+                
+            # The final index must be in the original formatted_text
+            # The logic above assumes the text has been pre-cleaned. We need the index *in the original string*
+            # For simplicity and robustness, we find the index of the first character of the word *after* the cut.
+            
+            # If we trim 0 words, the index is 0.
+            if trim_word_count == 0:
+                 return 0
+                 
+            # Find the starting position of the next word to be spoken
+            # This is the character index in the *clean* text
+            if trim_word_count < len(words):
+                 # Word to start at is words[trim_word_count]
+                 # We re-find its position in the string (less error-prone than length math)
+                 next_word = words[trim_word_count]
+                 try:
+                    # Find the first occurrence of the next word to be spoken
+                    # The index returned will be in the *clean* text.
+                    trim_index = clean_text.find(next_word)
+                    if trim_index != -1:
+                         # Now add the prefix length back to get the index in formatted_text
+                         return trim_index + (len(text) - len(clean_text.lstrip()))
+                 except:
+                     pass # Fall through to length logic if word find fails
+
+            # Fallback: just use character length up to the end of the last spoken word
+            trim_index = len(" ".join(words[:trim_word_count]))
+            
+            # Find the actual character index in the formatted_text
+            # Use `formatted_text.find(words[0])` to find the start of the clean text.
+            start_of_clean_text = len(text) - len(clean_text.lstrip())
+            
+            # If the next word exists, find the next space after the trimmed part to ensure clean word break
+            if trim_word_count < len(words):
+                trimmed_text_part = clean_text[:trim_char_index_in_clean_text]
+                # Now, find the index in the original string that corresponds to the end of the trimmed part
+                # This is equivalent to: start_of_clean_text + len(trimmed_text_part)
+                # We need to find the index of the first character of the word after the cut to be safe.
+                
+                # Best way: split by space, join, and measure the length.
+                words_before_cut = " ".join(words[:trim_word_count])
+                if words_before_cut:
+                    # Find the index of the end of the last word spoken + the space after it
+                    trim_idx = text.find(words_before_cut) + len(words_before_cut)
+                    # Advance past any subsequent whitespace
+                    while trim_idx < len(text) and text[trim_idx].isspace():
+                        trim_idx += 1
+                    return trim_idx
+                else:
+                    return start_of_clean_text # If 0 words trimmed, just return the start of the clean text
+                
+            else:
+                 # If all words were trimmed, return the full length of the text.
+                 return len(text)
+                
+            return 0 # Fallback
+    
         
 class BufferedPyAudioStreamer:
-    """PyAudio-based streamer with buffer accumulation and full audio collection"""
-    def __init__(self, sample_rate=24000, buffer_duration=10.0):
+    """
+    PyAudio-based streamer with 'Step-Down' buffering.
+    - Starts with a large buffer (e.g. 10s) for safety.
+    - Switches to a smaller buffer (e.g. 5s) to prevent silence on fast hardware
+      while preventing micro-stutter on slow hardware.
+    """
+    def __init__(self, sample_rate=24000, buffer_duration=10.0, restart_at_garbage=False):
         self.sample_rate = sample_rate
         self.buffer_duration = buffer_duration
         self.buffer_samples = int(sample_rate * buffer_duration)
+        self.restart_at_garbage = restart_at_garbage
+        
+        # --- NEW SETTING: Secondary Buffer ---
+        # Fast users won't notice it (latency is hidden by the queue).
+        # Slow users will get 1s clean chunks instead of robotic stuttering.
+        self.stream_chunk_duration = buffer_duration / 2
+        self.stream_threshold_samples = int(sample_rate * self.stream_chunk_duration)
+
         self.audio_queue = Queue()
-        # This flag is likely checked by the model, so we must manage it.
         self.finished_flags = [False] 
         self.playing = False
         self.audio_thread = None
         self.audio_buffer = np.array([], dtype=np.float32)
         self.full_audio = np.array([], dtype=np.float32)
+        
+        # Flag to track if the massive initial buffer has been sent
+        self.playback_started = False 
 
     def put(self, audio_chunk, indices):
         """Add audio chunk to the buffer and full audio collection"""
@@ -66,26 +188,33 @@ class BufferedPyAudioStreamer:
             
         self.full_audio = np.concatenate([self.full_audio, audio_chunk]) if self.full_audio.size else audio_chunk
         self.audio_buffer = np.concatenate([self.audio_buffer, audio_chunk]) if self.audio_buffer.size else audio_chunk
-        
-        if len(self.audio_buffer) >= self.buffer_samples:
-            play_chunk = self.audio_buffer[:self.buffer_samples]
-            self.audio_buffer = self.audio_buffer[self.buffer_samples:]
+                    
+        # --- DYNAMIC THRESHOLD LOGIC ---
+        if not self.playback_started:
+            # Phase 1: Waiting for the Big Initial Buffer (User Setting, e.g. 10s)
+            current_threshold = self.buffer_samples
+        else:
+            # Phase 2: Streaming Mode (Lower Threshold, e.g. 1s)
+            current_threshold = self.stream_threshold_samples
+                    
+        if len(self.audio_buffer) >= current_threshold:
+            play_chunk = self.audio_buffer
+            self.audio_buffer = np.array([], dtype=np.float32)
             self.audio_queue.put(play_chunk)
+            
+            # Once we push the first chunk, we switch to streaming mode
+            self.playback_started = True
 
-    # --- CHANGED: This is now a "soft end" for flushing the buffer ---
     def end(self, indices=None):
-        """
-        Called by model.generate() after each chunk.
-        Flushes the remaining audio buffer for the chunk but does NOT terminate the playback thread.
-        """
-        self.finished_flags[0] = True # Signal to the model this chunk is done.
+        """Called by model.generate() after each chunk."""
+        self.finished_flags[0] = True 
         
-        # If there's anything left in the buffer, queue it for playing.
-        if self.audio_buffer.size > 0:
-            play_chunk = self.audio_buffer.copy()
-            self.audio_buffer = np.array([], dtype=np.float32) # Clear the buffer
-            self.audio_queue.put(play_chunk)
-        # CRITICAL: We no longer put `None` in the queue here.
+        # Force flush whatever is left, BUT ONLY IF NO GARBAGE WAS DETECTED
+        #if self.audio_buffer.size > 0 and not self.garbage_detected:
+        #    play_chunk = self.audio_buffer.copy()
+        #    self.audio_buffer = np.array([], dtype=np.float32)
+        #    self.audio_queue.put(play_chunk)
+        #    self.playback_started = True
 
     # --- NEW: This is the "hard end" to terminate the thread ---
     def close(self):
@@ -166,7 +295,13 @@ class BaseVibeVoiceNode:
             logger.info("Model and processor memory freed successfully")
             
         except Exception as e:
-            logger.error(f"Error freeing memory: {e}")
+            logger.error(f"Warning: freeing memory: {e}. Maybe exllama is not loaded yet.")
+    
+    def split_by_sentence_enhanced(self, text):
+        # Split by newlines OR by sentence terminators followed by whitespace
+        sentences = re.split(r'\n|(?<=[.!?])\s+', text.strip())
+        # Remove empty strings and strip whitespace
+        return [sentence.strip() for sentence in sentences if sentence.strip()]
     
     def _check_dependencies(self):
         """Check if VibeVoice is available and import it with fallback installation"""
@@ -542,7 +677,7 @@ class BaseVibeVoiceNode:
                     self.model.exllama = exllama_wrapper               
                 
                 # Load processor
-                from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+                from processor.vibevoice_processor import VibeVoiceProcessor
                 self.processor = VibeVoiceProcessor.from_pretrained(model_path)
                 
                 # Restore environment variables
@@ -696,111 +831,185 @@ class BaseVibeVoiceNode:
                              cfg_scale: float, seed: int, diffusion_steps: int, use_sampling: bool,
                              temperature: float = 0.95, top_p: float = 0.95, 
                              streaming: bool = False, buffer_duration: float = 10.0, 
-                             max_new_tokens = 32637, negative_llm_steps_to_cache = 0, 
+                             max_new_tokens = 32637, 
+                             negative_llm_steps_to_skip = 0.0, 
+                             semantic_steps_to_skip = 0.0, 
                              increase_cfg=False,
-                             audio_streamer: BufferedPyAudioStreamer = None) -> dict:
+                             solver_order = 2,
+                             audio_streamer: BufferedPyAudioStreamer = None, 
+                             wav2lip_streamer: Wav2LipStreamer = None,
+                             restart_at_garbage: bool = False,
+                             use_compile: bool = False) -> dict:
         """Generate audio using VibeVoice model with optional streaming and returning full audio"""
+        
         try:
             if self.model is None or self.processor is None:
                 raise Exception("Model or processor not loaded")
+                
+            # Dynamically update scheduler order if requested
+            if solver_order is not None:
+                current_order = getattr(self.model.noise_scheduler.config, "solver_order", None)                
+                if current_order != solver_order:
+                    print(f"Switching scheduler order from {current_order} to {solver_order}")                    
+                    # Re-instantiate the scheduler with the new order
+                    new_config = dict(self.model.noise_scheduler.config)
+                    new_config['solver_order'] = solver_order                    
+                    self.model.noise_scheduler = DPMSolverMultistepScheduler.from_config(new_config)
+                
+            if use_compile:
+                self.model.semantic_tokenizer = torch.compile(self.model.semantic_tokenizer, mode="reduce-overhead")            
+                self.model.acoustic_tokenizer = torch.compile(self.model.acoustic_tokenizer, mode="reduce-overhead")            
+                self.model.prediction_head = torch.compile(self.model.prediction_head, mode="reduce-overhead")                     
             
-            torch.manual_seed(seed)
-            np.random.seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(seed)
-            
-            self.model.negative_llm_steps_to_cache = negative_llm_steps_to_cache
-            self.model.increase_cfg = increase_cfg
-            self.model.set_ddpm_inference_steps(diffusion_steps)
-            
+            # 1. Setup Streamer
             local_streamer = audio_streamer
             is_streaming_active = (local_streamer is not None) or streaming
             if local_streamer is None and streaming:
                 local_streamer = BufferedPyAudioStreamer(sample_rate=24000, buffer_duration=buffer_duration)
-                local_streamer.start_playback()
+                local_streamer.start_playback()   
 
-            inputs = self.processor([formatted_text], voice_samples=[voice_samples], return_tensors="pt", return_attention_mask=True)
-            device = next(self.model.parameters()).device
-            inputs = {
-                k: v.to(device) if hasattr(v, 'to') else v 
-                for k, v in inputs.items()
-            }
-
-            stop_check_fn = None
-            if INTERRUPTION_SUPPORT:
-                # --- THIS IS THE CRITICAL CHANGE ---
-                # This function will now throw the exception instead of catching it and returning True.
-                # This allows the exception to propagate up and stop the main chunk processing loop.
-                def comfyui_stop_check():
-                    import comfy.model_management as mm
-                    # This line will now raise InterruptProcessingException if the user clicks stop.
-                    mm.throw_exception_if_processing_interrupted()
-                    # The function no longer needs to return anything, as the exception will halt execution.
-                    # However, your inference loop checks the return value, so we return False if not interrupted.
-                    return False 
+            # 2. Initialize Retry Loop Variables
+            current_text_to_speak = formatted_text
+            current_seed = seed
+            accumulated_waveform = None
+            max_retries = 10
+            retry_count = 0
             
-                # We need to wrap the actual function call in your inference loop logic.
-                # So we create a wrapper that returns True on exception for the break,
-                # but more importantly, we let the original exception propagate.
-                # A better way is to modify the inference loop, but let's change the check function instead.
+            # --- START GENERATION LOOP ---
+            while True:                
+                # A. Prepare Inputs (Re-run every loop as text might change)
+                torch.manual_seed(current_seed)
+                np.random.seed(current_seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(current_seed)
                 
-                # Re-thinking: The simplest change is to NOT catch the exception.
-                # Your inference loop is not shown, but it likely calls this function.
-                # The key is to let the exception happen. Let's simplify the check function entirely.
-                
-                def final_stop_check():
-                    import comfy.model_management as mm
-                    # The call to model.generate is inside a try/except block.
-                    # When this throws, it will be caught and propagated correctly.
-                    # The `if stop_check_fn()` in your inference loop will never complete if an exception is thrown.
-                    mm.throw_exception_if_processing_interrupted()
+                self.model.negative_llm_steps_to_skip = negative_llm_steps_to_skip
+                self.model.semantic_steps_to_skip = semantic_steps_to_skip
+                self.model.increase_cfg = increase_cfg
+                self.model.set_ddpm_inference_steps(diffusion_steps)
 
-                stop_check_fn = final_stop_check
-
-            with torch.no_grad():
-                gen_kwargs = {
-                    "tokenizer": self.processor.tokenizer,
-                    "cfg_scale": cfg_scale,
-                    "max_new_tokens": max_new_tokens,
-                    "audio_streamer": local_streamer,
-                    "return_speech": not is_streaming_active,
-                    # Pass the function directly. The model's generate loop must call it.
-                    "stop_check_fn": stop_check_fn,
+                inputs = self.processor([current_text_to_speak], voice_samples=[voice_samples], return_tensors="pt", return_attention_mask=True)
+                device = next(self.model.parameters()).device
+                inputs = {
+                    k: v.to(device) if hasattr(v, 'to') else v 
+                    for k, v in inputs.items()
                 }
-                if use_sampling:
-                    gen_kwargs.update({"do_sample": True, "temperature": temperature, "top_p": top_p})
-                else:
-                    gen_kwargs["do_sample"] = False
+
+                # B. Setup Stop/Interrupt check
+                stop_check_fn = None
+                if INTERRUPTION_SUPPORT:
+                    def final_stop_check():
+                        import comfy.model_management as mm
+                        mm.throw_exception_if_processing_interrupted()
+                    stop_check_fn = final_stop_check
+
+                # C. Run Inference
+                with torch.no_grad():
+                    gen_kwargs = {
+                        "tokenizer": self.processor.tokenizer,
+                        "cfg_scale": cfg_scale,
+                        "max_new_tokens": max_new_tokens,
+                        "audio_streamer": local_streamer,
+                        "wav2lip_streamer": wav2lip_streamer,
+                        "return_speech": True, # Always return speech to measure duration for trimming
+                        "stop_check_fn": stop_check_fn,
+                        "restart_at_garbage": restart_at_garbage,
+                    }
+                    if use_sampling:
+                        gen_kwargs.update({"do_sample": True, "temperature": temperature, "top_p": top_p})
+                    else:
+                        gen_kwargs["do_sample"] = False
+                    
+                    # CALL GENERATE
+                    # Note: generate() must be updated to return partial audio and 'restart_needed' flag
+                    output = self.model.generate(**inputs, **gen_kwargs)
                 
-                # The model.generate call is what needs to be interrupted.
-                output = self.model.generate(**inputs, **gen_kwargs)
+                # D. Process Output of this attempt
+                chunk_waveform = None
+                speech_tensors = getattr(output, 'speech_outputs', None)
                 
+                if speech_tensors:
+                    raw_waveform = speech_tensors[0] if isinstance(speech_tensors, list) else speech_tensors
+                    if raw_waveform is not None:
+                        if raw_waveform.dtype == torch.bfloat16:
+                            raw_waveform = raw_waveform.to(torch.float32)
+                        chunk_waveform = raw_waveform.cpu()
+                        
+                        # Accumulate valid audio into the master buffer
+                        if accumulated_waveform is None:
+                            accumulated_waveform = chunk_waveform
+                        else:
+                            # Concatenate along time dimension (dim -1)
+                            accumulated_waveform = torch.cat([accumulated_waveform, chunk_waveform], dim=-1)
+
+                # E. Check for Restart Signal
+                if hasattr(output, 'restart_needed') and output.restart_needed:
+                    if retry_count >= max_retries:
+                        print(f"Max retries ({max_retries}) reached. Stopping generation.")
+                        break
+                    
+                    print(f"Garbage audio detected in attempt {retry_count+1}. Preparing restart...")
+                    
+                    # dont use estimaation based on audio length, use estimaation based on avg ratio steps / words == 4.0
+                    # so we need to get (last step number - noise steps) from generate() method and use it to estimate ok words
+                    
+                    # 1. Get the number of valid steps from the output
+                    valid_steps = getattr(output, 'valid_steps_count', 0)
+                    print(f"Detected {valid_steps} valid steps before garbage.")
+
+                    # 2. Trim the text based on valid steps using the new metric (steps/word == 4.0)
+                    trim_idx = estimate_word_trim_position(current_text_to_speak, valid_steps, steps_per_word=6.0)
+                    
+                    # 3. Update text for next run
+                    # Assuming current_text_to_speak has the 'Speaker 0: ' prefix if it's not the first run
+                    trimmed_part = current_text_to_speak[:trim_idx]
+                    current_text_to_speak = "Speaker 0: " + current_text_to_speak[trim_idx:].strip()
+                    print ("added Speaker 0: to text, todo: add check for single speaker.")
+                    
+                    if not current_text_to_speak.strip(): # Check if only 'Speaker 0: ' is left
+                        print("Text fully spoken (or fully trimmed). Stopping.")
+                        break
+                        
+                    print(f"Trimmed {len(trimmed_part)} chars ({trim_idx} index). Restarting with text: '{current_text_to_speak[:30]}...'")
+                    
+                    # 4. Update State for next loop
+                    current_seed += 1 # CRITICAL: Change seed to avoid regenerating the exact same noise
+                    retry_count += 1
+                    
+                    # Loop back to 'A' to start fresh inference with new text and seed
+                    continue 
+                
+                # If we get here, generation finished successfully without noise.
+                break 
+
+            # --- END GENERATION LOOP ---
+
+            # F. Final Cleanup and Return
             if is_streaming_active and local_streamer:
                 if audio_streamer is None:
+                    # If we created the streamer locally, we must close it and return the full buffer
                     local_streamer.end()
                     while local_streamer.playing:
                         time.sleep(0.1)
                     full_audio_np = local_streamer.get_full_audio()
                     waveform = torch.from_numpy(full_audio_np).unsqueeze(0).unsqueeze(0) if full_audio_np.size > 0 else None
                 else:
+                    # If streamer was passed in externally, just signal we are done with this segment
+                    # The caller (single_speaker_node) handles closing.
                     return {"waveform": None, "sample_rate": 24000, "streamed": True}
 
                 return {"waveform": waveform, "sample_rate": 24000, "streamed": True}
             else:
-                speech_tensors = getattr(output, 'speech_outputs', None)
-                if not speech_tensors:
-                    raise Exception("VibeVoice failed to generate audio.")
-
-                audio_tensor = speech_tensors[0] if isinstance(speech_tensors, list) else speech_tensors
-                if audio_tensor.dtype == torch.bfloat16:
-                    audio_tensor = audio_tensor.to(torch.float32)
-
-                return {"waveform": audio_tensor.cpu().unsqueeze(0), "sample_rate": 24000, "streamed": False}
+                # Non-streaming return: return the accumulated waveform from all attempts
+                if accumulated_waveform is None:
+                     # Fallback if something went wrong and nothing was generated
+                     accumulated_waveform = torch.zeros(1, 1, int(0.5 * 24000))
+                
+                return {"waveform": accumulated_waveform.unsqueeze(0), "sample_rate": 24000, "streamed": False}
                     
         except Exception as e:
-            # This block will now catch InterruptProcessingException from the generate call.
+            # Handle interruptions or real errors
             logger.error(f"VibeVoice generation failed: {e}")
             if 'local_streamer' in locals() and local_streamer and audio_streamer is None:
                 local_streamer.end()
-            # Re-raise the exception so the main `generate_speech` function can catch it and stop.
-            raise       
+            raise      
