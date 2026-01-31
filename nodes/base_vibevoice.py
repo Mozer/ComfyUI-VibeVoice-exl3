@@ -165,7 +165,7 @@ class BufferedPyAudioStreamer:
         # --- NEW SETTING: Secondary Buffer ---
         # Fast users won't notice it (latency is hidden by the queue).
         # Slow users will get 1s clean chunks instead of robotic stuttering.
-        self.stream_chunk_duration = buffer_duration / 2
+        self.stream_chunk_duration = buffer_duration
         self.stream_threshold_samples = int(sample_rate * self.stream_chunk_duration)
 
         self.audio_queue = Queue()
@@ -210,11 +210,11 @@ class BufferedPyAudioStreamer:
         self.finished_flags[0] = True 
         
         # Force flush whatever is left, BUT ONLY IF NO GARBAGE WAS DETECTED
-        #if self.audio_buffer.size > 0 and not self.garbage_detected:
-        #    play_chunk = self.audio_buffer.copy()
-        #    self.audio_buffer = np.array([], dtype=np.float32)
-        #    self.audio_queue.put(play_chunk)
-        #    self.playback_started = True
+        if self.audio_buffer.size > 0:
+            play_chunk = self.audio_buffer.copy()
+            self.audio_buffer = np.array([], dtype=np.float32)
+            self.audio_queue.put(play_chunk)
+            self.playback_started = True
 
     # --- NEW: This is the "hard end" to terminate the thread ---
     def close(self):
