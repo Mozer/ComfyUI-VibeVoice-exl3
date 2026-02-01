@@ -4,6 +4,7 @@ from tqdm import tqdm
 import torch
 import time
 import torch.nn as nn
+import inspect
 
 from transformers.models.auto import AutoModel, AutoModelForCausalLM
 
@@ -536,7 +537,22 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         )
 
         max_cache_length = generation_config.max_length - 1
-        self._prepare_cache_for_generation(generation_config, model_kwargs, None, batch_size, max_cache_length, device)
+        #self._prepare_cache_for_generation(generation_config, model_kwargs, None, batch_size, max_cache_length, device)
+       
+        # 1. Define the base arguments that exist in both versions (first 5 args)
+        # Note: We pass None as the 3rd argument. 
+        # In old versions, this maps to 'assistant_model=None'.
+        # In new versions, this maps to 'generation_mode=None'. Both are safe.         
+        call_args = [generation_config, model_kwargs, None, batch_size, max_cache_length]
+        # 2. Check the signature of the method to see if it expects 'device'
+        # The _prepare_cache_for_generation method is bound to 'self', so we inspect that.
+        sig = inspect.signature(self._prepare_cache_for_generation)
+        if "device" in sig.parameters:
+            # Old transformers (e.g., 4.51) expects 'device' as the 6th argument
+            call_args.append(device)
+        # 3. Call the function with the correct arguments        
+        self._prepare_cache_for_generation(*call_args)        
+        
         model_kwargs['cache_position'] = torch.arange(input_ids_length, device=device, dtype=torch.long)
         for k, v in model_kwargs.items():
             if isinstance(v, torch.Tensor):
@@ -553,8 +569,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                 model_kwargs=model_kwargs,
             )
 
-            stopping_criteria = self._get_stopping_criteria(generation_config=generation_config, stopping_criteria=StoppingCriteriaList())
-        
+            stopping_criteria = self._get_stopping_criteria(generation_config=generation_config, stopping_criteria=StoppingCriteriaList())        
             return generation_config, model_kwargs, input_ids, logits_processor, stopping_criteria
         else:
             return generation_config, model_kwargs, input_ids
