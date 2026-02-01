@@ -164,7 +164,7 @@ class BufferedPyAudioStreamer:
         
         # --- NEW SETTING: Secondary Buffer ---
         # Fast users won't notice it (latency is hidden by the queue).
-        # Slow users will get 1s clean chunks instead of robotic stuttering.
+        # Slow users will same buffer
         self.stream_chunk_duration = buffer_duration
         self.stream_threshold_samples = int(sample_rate * self.stream_chunk_duration)
 
@@ -671,6 +671,11 @@ class BaseVibeVoiceNode:
                     elapsed = time.time() - start_time
                 else:
                     elapsed = time.time() - start_time
+                    
+                if hasattr(self.model.config, 'decoder_config'):                                     
+                    # Set to 28 layers fro qwen-7b (for new transformers)                   
+                    self.model.config.num_hidden_layers = 28                    
+                    logger.info(f"After modification - Decoder layers: {self.model.config.decoder_config.num_hidden_layers}")    
                     
                 # Assign the pre-loaded ExLlama wrapper to the HF model
                 if use_exllama:
